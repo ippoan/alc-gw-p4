@@ -5,7 +5,7 @@
 # ビルド対象から除外する。host テストはモックioを注入するため実ソケット
 # 実装を必要とせず、linux targetでもlwip自体は使えるが不要な依存を増やさない。
 set(rtsp_client_srcs "src/rtsp_digest.c" "src/rtsp_sdp.c" "src/rtsp_client.c" "src/rtsp_demux.c" "src/h264_depacket.c")
-set(rtsp_client_requires "mbedtls")
+set(rtsp_client_requires "mbedtls" "log")
 if(NOT IDF_TARGET STREQUAL "linux")
     list(APPEND rtsp_client_srcs "src/rtsp_io_socket.c")
     list(APPEND rtsp_client_requires "lwip")

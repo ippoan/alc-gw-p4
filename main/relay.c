@@ -8,10 +8,16 @@
 // フレームを注入する経路が無いことをソース調査で確認済み)。
 // WHIP のシグナリング (POST/DELETE) は whip_client.c で自前実装する。
 //
-// 【実機未検証、要確認】esp_media_protocols の RTSP_CLIENT_PLAY +
-// video_enable=true の組み合わせは Espressif 公式サンプルに実例が無く、
-// receive_video の NAL 境界 (1 コールバック = 1 NAL か 1 アクセスユニットか)
-// と Annex-B 開始コードの有無が未確認。実機でのダンプ確認が必要。
+// RTSP pull は esp_media_protocols (Digest認証未対応で実機のTapo C212に
+// 対して機能しなかった) から自前実装 (components/rtsp_client) に置き換え
+// 済み (alc-gw-p4#1)。rtsp_client がRTSP制御プレーン (OPTIONS〜PLAY) を
+// 同期的に処理した後、専用タスク (rtsp_rx_task) がソケットを読み続けて
+// rtsp_demux (interleaved復号) → h264_depacket (Annex-B再構成) →
+// esp_peer_send_video の順に流す。
+//
+// 【既知の制約、v1スコープ】RTSP keepalive (Session timeoutに対する
+// 定期OPTIONS送信) は未実装。映像が流れ続けている限りタイムアウトしない
+// カメラが多いため実害は小さい想定だが、長時間運用で問題が出れば追加する。
 #include <string.h>
 #include <stdlib.h>
 
@@ -24,31 +30,48 @@
 
 #include "esp_peer.h"
 #include "esp_peer_default.h"
-#include "esp_rtsp.h"
+
+#include "rtsp_client.h"
+#include "rtsp_demux.h"
+#include "h264_depacket.h"
 
 #include "whip_client.h"
 #include "relay.h"
 
 static const char *TAG = "relay";
 
-#define EVT_CODEC_CONFIRMED   (1 << 0)
-#define EVT_CODEC_UNSUPPORTED (1 << 1)
-#define EVT_PEER_CONNECTED    (1 << 2)
-#define EVT_PEER_FAILED       (1 << 3)
-#define EVT_RTSP_ERROR        (1 << 4)
+#define EVT_PEER_CONNECTED (1 << 2)
+#define EVT_PEER_FAILED    (1 << 3)
+#define EVT_RTSP_ERROR     (1 << 4)
+#define EVT_RTSP_RX_STOPPED (1 << 5)
 
 // docs/whip-convention.md: 再接続は 1s → 2s → … → 60s 上限
 #define RECONNECT_MIN_BACKOFF_MS 1000
 #define RECONNECT_MAX_BACKOFF_MS 60000
-#define RTSP_DESCRIBE_TIMEOUT_MS 10000
+#define RTSP_RESPONSE_TIMEOUT_MS 10000
 // esp_peer_main_loop を pump する間隔。公式サンプル peer_demo.c と同じ駆動方法
 #define PEER_MAIN_LOOP_INTERVAL_MS 10
+
+// interleavedフレーム1つ分 (RTPは通常MTU程度に収まる)。demuxがこれを超える
+// フレームは安全にスキップする (rtsp_demuxのオーバーサイズ処理)
+#define DEMUX_FRAME_BUF_SIZE 1500
+// 1アクセスユニット (IDRフレーム1枚) 分。360p H264ならこれで十分な想定だが、
+// 実機のビットレート次第で不足する場合は増やす (PSRAM未使用のため内蔵SRAM)
+#define H264_AU_BUF_SIZE (64 * 1024)
 
 typedef struct {
     EventGroupHandle_t events;
     esp_peer_handle_t peer;
     whip_client_t whip;
-    esp_rtsp_handle_t rtsp;
+
+    rtsp_client_t *rtsp;
+    rtsp_demux_t demux;
+    h264_depacket_t depacket;
+    uint8_t *demux_buf; // heap確保 (DEMUX_FRAME_BUF_SIZE)
+    uint8_t *au_buf;    // heap確保 (H264_AU_BUF_SIZE)
+
+    TaskHandle_t rtsp_rx_task;
+    volatile bool rtsp_rx_should_stop;
 } relay_session_t;
 
 // ---------------------------------------------------------------------
@@ -108,40 +131,67 @@ static int on_peer_msg(esp_peer_msg_t *msg, void *ctx) {
 }
 
 // ---------------------------------------------------------------------
-// esp_rtsp コールバック
+// RTSP受信 (interleaved復号 → H264 depacketization → esp_peer)
 // ---------------------------------------------------------------------
 
-static int on_rtsp_stream_codec(esp_rtsp_aud_info_t *aud_info, esp_rtsp_video_info_t *vid_info, void *ctx) {
-    relay_session_t *s = (relay_session_t *)ctx;
-    if (vid_info == NULL || vid_info->vcodec != RTSP_VCODEC_H264) {
-        ESP_LOGE(TAG, "camera stream is not H264 (v1 は H264 のみ対応、docs/whip-convention.md 参照)");
-        xEventGroupSetBits(s->events, EVT_CODEC_UNSUPPORTED);
-        return -1;
-    }
-    ESP_LOGI(TAG, "rtsp video: H264 %dx%d @%dfps", vid_info->width, vid_info->height, vid_info->fps);
-    xEventGroupSetBits(s->events, EVT_CODEC_CONFIRMED);
-    return 0;
-}
-
-// カメラの H.264 アクセスユニットを無トランスコードのまま esp_peer_send_video
-// へ転送する。RTP 由来の pts は esp_rtsp から得られないため、esp_timer から
-// 自前の単調増加 pts を合成する (esp_peer 公式サンプルの
+// H.264アクセスユニット (Annex-B) を無トランスコードのまま esp_peer_send_video
+// へ転送する。RTPタイムスタンプはPTPドリフトの補正が別途要るため使わず、
+// esp_timerから自前の単調増加ptsを合成する (esp_peer公式サンプルの
 // "av_stream pts out of sync, use system pts instead" と同じ手法)。
-static int on_rtsp_receive_video(unsigned char *data, int len, void *ctx) {
+static void on_h264_au(const uint8_t *annexb, size_t len, bool keyframe, void *ctx) {
     relay_session_t *s = (relay_session_t *)ctx;
-    if (s->peer == NULL || len <= 0) {
-        return 0;
+    (void)keyframe;
+    if (s->peer == NULL || len == 0) {
+        return;
     }
     esp_peer_video_frame_t frame = {
         .pts = (uint32_t)(esp_timer_get_time() / 1000),
-        .data = data,
+        .data = (uint8_t *)annexb,
         .size = len,
     };
     int err = esp_peer_send_video(s->peer, &frame);
     if (err != 0) {
         ESP_LOGW(TAG, "esp_peer_send_video failed: %d", err);
     }
-    return 0;
+}
+
+// SETUPで "interleaved=0-1" を要求している (channel0=RTP video, channel1=RTCP)。
+// RTCPはv1では読み捨てる。
+static void on_demux_frame(uint8_t channel, const uint8_t *payload, size_t len, void *ctx) {
+    relay_session_t *s = (relay_session_t *)ctx;
+    if (channel == 0) {
+        h264_depacket_feed_rtp(&s->depacket, payload, len);
+    }
+}
+
+static void rtsp_rx_task(void *arg) {
+    relay_session_t *s = (relay_session_t *)arg;
+    const rtsp_io_ops_t *io = NULL;
+    void *io_ctx = NULL;
+    rtsp_client_get_io(s->rtsp, &io, &io_ctx);
+
+    uint8_t buf[DEMUX_FRAME_BUF_SIZE];
+
+    // PLAY応答読み取り時にソケットへ先読みされてしまった分 (RTPの先頭を
+    // 含むかもしれない) をまず処理する
+    size_t buffered = rtsp_client_take_buffered(s->rtsp, buf, sizeof(buf));
+    if (buffered > 0) {
+        rtsp_demux_feed(&s->demux, buf, buffered);
+    }
+
+    while (!s->rtsp_rx_should_stop) {
+        int n = io->recv(io_ctx, buf, sizeof(buf), 1000);
+        if (n < 0) {
+            ESP_LOGW(TAG, "rtsp: connection lost while streaming");
+            xEventGroupSetBits(s->events, EVT_RTSP_ERROR);
+            break;
+        }
+        if (n > 0) {
+            rtsp_demux_feed(&s->demux, buf, (size_t)n);
+        }
+    }
+    xEventGroupSetBits(s->events, EVT_RTSP_RX_STOPPED);
+    vTaskDelete(NULL);
 }
 
 // ---------------------------------------------------------------------
@@ -149,39 +199,60 @@ static int on_rtsp_receive_video(unsigned char *data, int len, void *ctx) {
 // ---------------------------------------------------------------------
 
 static esp_err_t start_rtsp(relay_session_t *s) {
-    // esp_rtsp が内部で保持し続けるポインタなので static にして関数外まで
-    // 生存させる (このプロセス内で複数セッションが並行することは無い前提)
-    static esp_rtsp_data_cb_t data_cb;
-    memset(&data_cb, 0, sizeof(data_cb));
-    data_cb.receive_video = on_rtsp_receive_video;
-    data_cb.stream_codec = on_rtsp_stream_codec;
-
-    esp_rtsp_config_t cfg = {
-        .ctx = s,
-        .uri = CONFIG_RELAY_RTSP_URL,
-        .video_enable = true,
-        .audio_enable = false, // v1 スコープ: 映像のみ (docs/whip-convention.md)
-        .mode = RTSP_CLIENT_PLAY,
-        .trans = RTSP_TRANSPORT_TCP, // interleaved。UDP側ポート通知が不要になる分シンプル
-        .data_cb = &data_cb,
-        .stack_size = 8192,
-        .task_prio = 5,
+    rtsp_client_config_t cfg = {
+        .url = CONFIG_RELAY_RTSP_URL,
+        .username = CONFIG_RELAY_RTSP_USERNAME[0] != '\0' ? CONFIG_RELAY_RTSP_USERNAME : NULL,
+        .password = CONFIG_RELAY_RTSP_PASSWORD[0] != '\0' ? CONFIG_RELAY_RTSP_PASSWORD : NULL,
+        .response_timeout_ms = RTSP_RESPONSE_TIMEOUT_MS,
     };
-    s->rtsp = esp_rtsp_client_start(&cfg);
-    if (s->rtsp == NULL) {
-        ESP_LOGE(TAG, "esp_rtsp_client_start failed");
-        return ESP_FAIL;
+    esp_err_t err = rtsp_client_open(&cfg, &s->rtsp);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "rtsp_client_open failed: %s", esp_err_to_name(err));
+        return err;
     }
 
-    EventBits_t bits = xEventGroupWaitBits(s->events, EVT_CODEC_CONFIRMED | EVT_CODEC_UNSUPPORTED,
-                                            pdFALSE, pdFALSE, pdMS_TO_TICKS(RTSP_DESCRIBE_TIMEOUT_MS));
-    if (bits & EVT_CODEC_UNSUPPORTED) {
-        return ESP_ERR_NOT_SUPPORTED;
+    rtsp_sdp_video_t video;
+    err = rtsp_client_play(s->rtsp, &video);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "rtsp_client_play failed: %s", esp_err_to_name(err));
+        return err;
     }
-    if (!(bits & EVT_CODEC_CONFIRMED)) {
-        ESP_LOGE(TAG, "rtsp: timed out waiting for stream codec info");
-        return ESP_ERR_TIMEOUT;
+    ESP_LOGI(TAG, "rtsp: PLAY ok (payload_type=%d, sps_len=%d, pps_len=%d)", video.payload_type,
+             (int)video.sps_len, (int)video.pps_len);
+
+    s->demux_buf = malloc(DEMUX_FRAME_BUF_SIZE);
+    s->au_buf = malloc(H264_AU_BUF_SIZE);
+    if (s->demux_buf == NULL || s->au_buf == NULL) {
+        ESP_LOGE(TAG, "malloc failed for demux/au buffers");
+        return ESP_ERR_NO_MEM;
     }
+    h264_depacket_init(&s->depacket, s->au_buf, H264_AU_BUF_SIZE, on_h264_au, s);
+    rtsp_demux_init(&s->demux, s->demux_buf, DEMUX_FRAME_BUF_SIZE, on_demux_frame, s);
+
+    if (video.has_sprop && (video.sps_len > 0 || video.pps_len > 0)) {
+        // SDPのsprop-parameter-setsを最初のフレームとして先出しする。
+        // カメラによってはIDR毎にSTAP-Aで再送してくるが、esp_peer側は
+        // SPS/PPSの重複を許容する想定で素通しにする (実装計画PR4のリスク節)
+        static const uint8_t start_code[4] = {0, 0, 0, 1};
+        uint8_t sps_pps[256];
+        size_t off = 0;
+        if (video.sps_len > 0 && off + 4 + video.sps_len <= sizeof(sps_pps)) {
+            memcpy(sps_pps + off, start_code, 4);
+            off += 4;
+            memcpy(sps_pps + off, video.sps, video.sps_len);
+            off += video.sps_len;
+        }
+        if (video.pps_len > 0 && off + 4 + video.pps_len <= sizeof(sps_pps)) {
+            memcpy(sps_pps + off, start_code, 4);
+            off += 4;
+            memcpy(sps_pps + off, video.pps, video.pps_len);
+            off += video.pps_len;
+        }
+        if (off > 0) {
+            on_h264_au(sps_pps, off, true, s);
+        }
+    }
+
     return ESP_OK;
 }
 
@@ -217,22 +288,36 @@ static esp_err_t start_peer(relay_session_t *s) {
 }
 
 static void teardown_session(relay_session_t *s) {
+    if (s->rtsp_rx_task != NULL) {
+        s->rtsp_rx_should_stop = true;
+        // rtsp_rx_task が自分でソケットの読み取りをやめるのを待ってから
+        // 閉じる (io->close と recv の競合を避ける)。io->recv のタイムアウト
+        // (1000ms) 分は待つ必要があるため、余裕を見て2000ms
+        xEventGroupWaitBits(s->events, EVT_RTSP_RX_STOPPED, pdTRUE, pdFALSE, pdMS_TO_TICKS(2000));
+        s->rtsp_rx_task = NULL;
+    }
+
     whip_client_close(&s->whip, CONFIG_RELAY_WHIP_TOKEN);
     if (s->peer != NULL) {
         esp_peer_close(s->peer);
         s->peer = NULL;
     }
     if (s->rtsp != NULL) {
-        esp_rtsp_client_stop(s->rtsp);
+        rtsp_client_teardown(s->rtsp);
+        rtsp_client_close(s->rtsp);
         s->rtsp = NULL;
     }
+    free(s->demux_buf);
+    free(s->au_buf);
+    s->demux_buf = NULL;
+    s->au_buf = NULL;
     if (s->events != NULL) {
         vEventGroupDelete(s->events);
         s->events = NULL;
     }
 }
 
-// 1 回の接続試行: RTSP describe (コーデック確認) → WHIP publish → 接続維持
+// 1 回の接続試行: RTSP PLAY → WHIP publish → 接続維持
 // (esp_peer_main_loop を pump し続ける) → 切断/エラーで戻る。
 // *out_connected_once は接続成功(CONNECTED状態)を一度でも観測したら true
 // にする — 呼び出し側のバックオフリセット判定に使う。
@@ -253,6 +338,14 @@ static esp_err_t run_once(bool *out_connected_once) {
     if (err != ESP_OK) {
         teardown_session(&session);
         return err;
+    }
+
+    BaseType_t rx_ok = xTaskCreate(rtsp_rx_task, "rtsp_rx", 8192, &session, 5, &session.rtsp_rx_task);
+    if (rx_ok != pdPASS) {
+        ESP_LOGE(TAG, "xTaskCreate(rtsp_rx) failed");
+        session.rtsp_rx_task = NULL;
+        teardown_session(&session);
+        return ESP_ERR_NO_MEM;
     }
 
     while (1) {

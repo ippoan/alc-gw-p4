@@ -7,7 +7,7 @@ M5Stack Unit PoE-P4 (ESP32-P4) 向け、C212 カメラ映像を RTSP pull → WH
 ## 現状
 
 - Unit PoE-P4 実機での書き込み・動作確認まで完了 ([docs/hardware-notes.md](docs/hardware-notes.md))
-- 中継本体 (`main/`, [alc-gw-p4#1](https://github.com/ippoan/alc-gw-p4/issues/1)): CI で esp32p4 向けビルド確認済み。**実機での動作確認は未実施** — 特に `esp_media_protocols` の `RTSP_CLIENT_PLAY` + 映像有効の組み合わせは Espressif 公式サンプルに実例が無く、`receive_video` の NAL 境界/Annex-B framing が未検証 (`main/relay.c` のコメント参照)
+- 中継本体 (`main/`, [alc-gw-p4#1](https://github.com/ippoan/alc-gw-p4/issues/1)): 実機 (Tapo C212) で RTSP Digest 認証 (DESCRIBE 401→再送→200) から SETUP/PLAY までの通信を確認済み。自前 RTSP クライアント (`components/rtsp_client`) が `esp_media_protocols` (Digest 認証未対応) を置き換えている。WHIP publish 部分は SFU 未接続のため未検証 (`CONFIG_RELAY_WHIP_URL` は実運用時に設定が必要)。
 
 ## main/ (中継本体)
 

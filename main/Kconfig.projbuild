@@ -1,11 +1,26 @@
 menu "alc-gw-p4 Relay Configuration"
 
     config RELAY_RTSP_URL
-        string "C212 RTSP URL (stream2, 転送用)"
-        default "rtsp://user:pass@192.168.1.50:554/stream2"
+        string "C212 RTSP URL (stream2, 転送用、認証情報は含めない)"
+        default "rtsp://192.168.1.50:554/stream2"
         help
             C212 の転送用 RTSP URL (360p サブストリーム)。ローカル表示は
             行わないため stream1 とは別。docs/whip-convention.md 参照。
+            認証情報は埋め込まず RELAY_RTSP_USERNAME/PASSWORD を使う
+            (esp_media_protocols 時代の user:pass@ 埋め込みは自前RTSP
+            クライアント (rtsp_client) への置き換えで廃止、alc-gw-p4#1)。
+
+    config RELAY_RTSP_USERNAME
+        string "C212 RTSP username (RTSP Digest認証)"
+        default ""
+        help
+            RTSP Digest 認証のユーザー名。空なら認証なしとして接続する。
+
+    config RELAY_RTSP_PASSWORD
+        string "C212 RTSP password (RTSP Digest認証)"
+        default ""
+        help
+            RTSP Digest 認証のパスワード。
 
     config RELAY_WHIP_URL
         string "WHIP publish endpoint"
