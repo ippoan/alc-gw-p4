@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 
+#include "esp_log.h"
 #include "sdkconfig.h"
 #include "rtsp_digest.h"
 #include "rtsp_sdp.h"
@@ -12,6 +13,8 @@
 #if !CONFIG_IDF_TARGET_LINUX
 #include "rtsp_io_socket.h"
 #endif
+
+static const char *TAG = "rtsp_client";
 
 #define RTSP_MSG_BUF_SIZE       1536
 #define RTSP_BODY_BUF_SIZE      2048
@@ -478,12 +481,15 @@ static esp_err_t request_with_auth(rtsp_client_t *c, const char *method, const c
         int cseq = c->cseq++;
         esp_err_t err = send_request(c, method, uri, auth_line, extra_lines, cseq);
         if (err != ESP_OK) {
+            ESP_LOGW(TAG, "%s %s: send_request failed: %s", method, uri, esp_err_to_name(err));
             return err;
         }
         err = read_response(c, cseq, resp);
         if (err != ESP_OK) {
+            ESP_LOGW(TAG, "%s %s: read_response failed: %s", method, uri, esp_err_to_name(err));
             return err;
         }
+        ESP_LOGI(TAG, "%s %s -> %d", method, uri, resp->status_code);
 
         if (resp->status_code == 401) {
             if (!resp->has_www_authenticate) {
@@ -571,9 +577,12 @@ esp_err_t rtsp_client_play(rtsp_client_t *c, rtsp_sdp_video_t *video_out) {
     if (c == NULL || video_out == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    ESP_LOGI(TAG, "connecting to %s:%u ...", c->host, (unsigned)c->port);
     if (c->io->connect(c->io_ctx, c->host, c->port, c->timeout_ms) != 0) {
+        ESP_LOGW(TAG, "connect to %s:%u failed", c->host, (unsigned)c->port);
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "connected");
 
     rtsp_response_t resp;
 
@@ -639,9 +648,20 @@ esp_err_t rtsp_client_teardown(rtsp_client_t *c) {
     if (!c->have_session) {
         return ESP_OK;
     }
-    rtsp_response_t resp;
-    esp_err_t err = request_with_auth(c, "TEARDOWN", c->base_uri, "", &resp);
-    c->have_session = false; // best-effort。応答の成否によらずセッション状態はクリアする
+    // best-effort・fire-and-forget: PLAY成功後はソケットにRTP-over-TCPの
+    // バイナリデータが届き続けており、ここで応答を読もうとすると未読の
+    // RTPフレームをRTSPテキスト応答と誤認しかねない (interleavedストリーム
+    // の制約、実機検証で確認)。応答は読まずリクエスト送信のみ行う。
+    char auth_line[512] = "";
+    if (c->have_challenge) {
+        char auth_value[400];
+        if (build_auth_header_value(c, "TEARDOWN", c->base_uri, auth_value, sizeof(auth_value)) == ESP_OK) {
+            snprintf(auth_line, sizeof(auth_line), "Authorization: %s\r\n", auth_value);
+        }
+    }
+    int cseq = c->cseq++;
+    esp_err_t err = send_request(c, "TEARDOWN", c->base_uri, auth_line, "", cseq);
+    c->have_session = false; // best-effort。応答を待たずにセッション状態はクリアする
     return err;
 }
 

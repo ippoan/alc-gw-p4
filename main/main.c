@@ -4,7 +4,6 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "media_lib_adapter.h"
 
 #include "eth_init.h"
 #include "relay.h"
@@ -25,9 +24,6 @@ void app_main(void) {
     if (!app_eth_wait_for_ip(30000)) {
         ESP_LOGW(TAG, "no IP after 30s, continuing anyway (relay will retry with backoff)");
     }
-
-    // esp_media_protocols (RTSP) が内部で使う media_lib_sal の既定アダプタ
-    media_lib_add_default_adapter();
 
     // DTLS証明書生成の事前ウォームアップ (esp_peer 公式サンプルの推奨)
     esp_peer_pre_generate_cert();
