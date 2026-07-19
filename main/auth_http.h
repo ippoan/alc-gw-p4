@@ -22,6 +22,22 @@ esp_err_t auth_http_hub_token(const char *base_url, const char *device_id, const
 
 void auth_http_hub_token_free(auth_http_hub_token_t *t);
 
+// POST /device/cam-relay-token の結果。access_token/site_id は呼び出し側が free() する。
+typedef struct {
+    char *access_token;
+    int expires_in_s;
+    char *site_id;
+} auth_http_cam_relay_token_t;
+
+// カメラ中継シグナリング (cf-alc-signaling DO) 接続用の token を mint する。
+// hub-token と異なり相手デバイスとの直接やり取りが無いため nonce は不要
+// (ippoan/alc-gw-p4#2、ippoan/auth-worker#406)。
+// 成功時は *out に結果を書き込む (呼び出し側が auth_http_cam_relay_token_free で解放)。
+esp_err_t auth_http_cam_relay_token(const char *base_url, const char *device_id, const char *device_secret,
+                                     auth_http_cam_relay_token_t *out);
+
+void auth_http_cam_relay_token_free(auth_http_cam_relay_token_t *t);
+
 // POST /device/introspect の結果。valid=false なら site_id/role は未設定 (NULL)。
 typedef struct {
     bool valid;
