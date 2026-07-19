@@ -1,0 +1,64 @@
+# CI 構成 (ippoan/alc-app-s3 の方式を踏襲、C/idf.py 向けに簡略化):
+#
+#   PR / main = espressif/esp-idf-ci-action で idf.py build (esp32p4)
+#   auto-merge (ippoan 標準の reusable) を build 通過後に実行
+#
+# alc-app-s3 (Rust + esp-idf-sys) は cargo/rust-cache 起因のキャッシュ管理が
+# 複雑だが、本リポジトリは素の ESP-IDF (C, idf.py) のため espressif 公式の
+# Docker ベースアクションで十分 (docker image 自体が GHA のレイヤーキャッシュで
+# 再利用される。手動キャッシュ設定は不要)。
+#
+# ビルド対象は examples/hello_world のみ (実機書き込み疎通確認用、docs/hardware-notes.md
+# 参照)。alc-gw-p4#1 の中継本体 (esp_media_protocols + esp_peer) 実装後は
+# matrix にエントリを追加すること。
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# auto-merge reusable (App token で merge + PR write) に必要
+permissions:
+  contents: write
+  pull-requests: write
+
+# PR は最新コミット優先で実行中 run をキャンセルする。main はキャンセルしない
+# (ippoan/alc-app-s3, ippoan/alc-gw と同じ判断)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # examples/hello_world/sdkconfig.defaults / docs/hardware-notes.md と揃える。
+  # 上げる時は両方を合わせて更新すること
+  ESP_IDF_VERSION: v5.5.3
+
+jobs:
+  build:
+    name: "Build (${{ matrix.name }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: hello_world
+            path: examples/hello_world
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: idf.py build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.ESP_IDF_VERSION }}
+          target: esp32p4
+          path: ${{ matrix.path }}
+
+  auto-merge:
+    name: Auto Merge
+    needs: [build]
+    if: github.event_name == 'pull_request'
+    uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
+    secrets: inherit
