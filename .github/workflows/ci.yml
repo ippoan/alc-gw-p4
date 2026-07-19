@@ -8,9 +8,8 @@
 # Docker ベースアクションで十分 (docker image 自体が GHA のレイヤーキャッシュで
 # 再利用される。手動キャッシュ設定は不要)。
 #
-# ビルド対象は examples/hello_world のみ (実機書き込み疎通確認用、docs/hardware-notes.md
-# 参照)。alc-gw-p4#1 の中継本体 (esp_media_protocols + esp_peer) 実装後は
-# matrix にエントリを追加すること。
+# ビルド対象: examples/hello_world (実機書き込み疎通確認用、docs/hardware-notes.md
+# 参照) + relay (alc-gw-p4#1 の中継本体、リポジトリルート)。
 name: ci
 
 on:
@@ -45,6 +44,8 @@ jobs:
         include:
           - name: hello_world
             path: examples/hello_world
+          - name: relay
+            path: .
     steps:
       - name: Checkout
         uses: actions/checkout@v4

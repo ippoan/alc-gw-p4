@@ -1,0 +1,25 @@
+# Espressif IoT Development Framework (ESP-IDF) 5.5.3
+CONFIG_IDF_TARGET="esp32p4"
+
+# 実機 (rev v1.3) 対応。ESP-IDF v5.5.3 の既定は v3.1+ のみ要求するため必須
+# (examples/hello_world/sdkconfig.defaults, docs/hardware-notes.md 参照)
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_1=y
+
+# Unit PoE-P4: esp32p4 内蔵EMAC + IP101GRI PHY (RMII, 外部クロック GPIO50)。
+# GPIO 値は m5stack/M5Unit-PoE-P4-UserDemo の実機 sdkconfig から採取
+CONFIG_ETH_USE_ESP32_EMAC=y
+CONFIG_ETH_PHY_INTERFACE_RMII=y
+CONFIG_EXAMPLE_USE_INTERNAL_ETHERNET=y
+CONFIG_EXAMPLE_ETH_PHY_IP101=y
+CONFIG_EXAMPLE_ETH_MDC_GPIO=31
+CONFIG_EXAMPLE_ETH_MDIO_GPIO=52
+CONFIG_EXAMPLE_ETH_PHY_RST_GPIO=51
+CONFIG_EXAMPLE_ETH_PHY_ADDR=1
+
+# esp_peer (WebRTC/WHIP) は DTLS-SRTP (RFC 5764) 鍵交換に mbedTLS の
+# DTLS-SRTP サポートを要求するが、既定では無効 (どちらも default=n)。
+# 有効化しないと components/espressif__esp_peer/src/dtls_srtp.c が
+# mbedtls_ssl_conf_dtls_srtp_protection_profiles 等の未宣言エラーでビルド失敗する
+CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
+CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
