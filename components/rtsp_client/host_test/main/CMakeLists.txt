@@ -1,5 +1,6 @@
 idf_component_register(
-    SRCS "test_main.c" "test_rtsp_digest.c" "test_rtsp_sdp.c" "test_rtsp_client.c"
+    SRCS "test_main.c" "test_rtsp_digest.c" "test_rtsp_sdp.c" "test_rtsp_client.c" "test_rtsp_demux.c"
+         "test_h264_depacket.c"
     INCLUDE_DIRS "."
     REQUIRES unity rtsp_client
 )
