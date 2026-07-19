@@ -39,10 +39,19 @@ esp_err_t console_cmds_start(void) {
     repl_config.prompt = "hub-link> ";
     repl_config.max_cmdline_length = 256;
 
-    esp_console_dev_uart_config_t uart_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
-    esp_err_t err = esp_console_new_repl_uart(&uart_config, &repl_config, &repl);
+    // esp_console_new_repl_uart (実UART0 = GPIO37/38) ではなく USB Serial/JTAG
+    // を使う。この基板は PC と native USB Serial/JTAG (esptool/espflash が
+    // 使うのと同じ COM ポート) でしか繋がっておらず、GPIO37/38 には何も
+    // 配線されていない。CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG により
+    // ログ出力 (stdout) だけは USB 側にもミラーされるため COM ポートで見えて
+    // しまうが、これは書き込み専用のミラーで stdin は複製されない —
+    // 結果、REPL は誰も繋いでいない UART0 の RX を待ち続け、USB 経由でどんな
+    // コマンドを送っても (改行コードを変えても) 一切応答が返らない事故と
+    // なっていた (実機検証で特定)。
+    esp_console_dev_usb_serial_jtag_config_t usb_config = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+    esp_err_t err = esp_console_new_repl_usb_serial_jtag(&usb_config, &repl_config, &repl);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_console_new_repl_uart failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "esp_console_new_repl_usb_serial_jtag failed: %s", esp_err_to_name(err));
         return err;
     }
 

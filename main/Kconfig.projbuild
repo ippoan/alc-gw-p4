@@ -24,13 +24,17 @@ menu "alc-gw-p4 Relay Configuration"
 
     config RELAY_SIGNALING_URL
         string "Camera signaling room WebSocket URL"
-        default "wss://alc-signaling.example.workers.dev/cam-room/site1"
+        default ""
         help
             wss://<signaling>/cam-room/<拠点ID> 形式 (role=device は
             signaling_client が自動付与)。ippoan/alc-app cf-alc-signaling
             の CameraSignalingRoom (ippoan/alc-app#129) と話す。旧
             WHIP publish endpoint (https://<sfu>/ingest/<拠点ID>) から
-            置き換え。
+            置き換え。空なら relay_task 自体を起動しない (relay.c 参照) —
+            以前はダミーの example.workers.dev を既定にしていたため、未設定の
+            まま起動すると DNS 解決失敗の再接続ループが priority 5 で回り
+            続け、priority 2 の console REPL タスクが実質的に応答不能になる
+            事故があった。
 
     config RELAY_SIGNALING_TOKEN
         string "Signaling Bearer token (拠点トークン)"
