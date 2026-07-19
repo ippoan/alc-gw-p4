@@ -17,6 +17,18 @@ static void md5_hex(const unsigned char *data, size_t len, char out_hex[33]) {
     out_hex[32] = '\0';
 }
 
+// dest_cap 未満に切り詰めてコピーする (常にNUL終端)。src の宣言上の最大長が
+// dest より大きい場合、snprintf(dest, cap, "%s", src) は -Wformat-truncation
+// (ESP-IDF ビルドでは -Werror) に引っかかるため、こちらを使う。
+static void copy_bounded(char *dest, size_t dest_cap, const char *src) {
+    size_t n = strlen(src);
+    if (n >= dest_cap) {
+        n = dest_cap - 1;
+    }
+    memcpy(dest, src, n);
+    dest[n] = '\0';
+}
+
 static const char *skip_ws(const char *p) {
     while (*p == ' ' || *p == '\t') {
         p++;
@@ -118,13 +130,13 @@ esp_err_t rtsp_digest_parse_challenge(const char *www_authenticate, rtsp_digest_
     char key[32], val[RTSP_DIGEST_NONCE_MAX];
     while ((p = next_param(p, key, sizeof(key), val, sizeof(val))) != NULL) {
         if (strcasecmp(key, "realm") == 0) {
-            snprintf(out->realm, sizeof(out->realm), "%s", val);
+            copy_bounded(out->realm, sizeof(out->realm), val);
             has_realm = true;
         } else if (strcasecmp(key, "nonce") == 0) {
-            snprintf(out->nonce, sizeof(out->nonce), "%s", val);
+            copy_bounded(out->nonce, sizeof(out->nonce), val);
             has_nonce = true;
         } else if (strcasecmp(key, "opaque") == 0) {
-            snprintf(out->opaque, sizeof(out->opaque), "%s", val);
+            copy_bounded(out->opaque, sizeof(out->opaque), val);
             out->has_opaque = true;
         } else if (strcasecmp(key, "stale") == 0) {
             out->stale = (strcasecmp(val, "true") == 0);
