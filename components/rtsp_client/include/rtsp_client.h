@@ -62,6 +62,18 @@ size_t rtsp_client_take_buffered(rtsp_client_t *c, uint8_t *out, size_t out_cap)
 
 void rtsp_client_get_io(rtsp_client_t *c, const rtsp_io_ops_t **io, void **io_ctx);
 
+// SETUP応答のSessionヘッダで通知された timeout (秒)。省略時は既定の60。
+// セッションが無ければ0を返す。
+uint32_t rtsp_client_get_session_timeout_sec(const rtsp_client_t *c);
+
+// Session timeoutを更新させるための定期 OPTIONS を送る (fire-and-forget)。
+// TEARDOWN と同じ理由 (PLAY後はソケットにRTP-over-TCPのバイナリが流れ続けて
+// おり、応答をテキストとして読もうとすると誤読しうる) で応答は読まない。
+// 呼び出し側 (relay.c) の rtsp_rx_task が同じソケットを読み続けているため、
+// このOPTIONS応答は rtsp_demux が '$' 待ち中の非バイナリとして読み飛ばす。
+// セッションが無ければ何もせず ESP_OK を返す。
+esp_err_t rtsp_client_send_keepalive(rtsp_client_t *c);
+
 #ifdef __cplusplus
 }
 #endif

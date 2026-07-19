@@ -15,9 +15,9 @@
 // rtsp_demux (interleaved復号) → h264_depacket (Annex-B再構成) →
 // esp_peer_send_video の順に流す。
 //
-// 【既知の制約、v1スコープ】RTSP keepalive (Session timeoutに対する
-// 定期OPTIONS送信) は未実装。映像が流れ続けている限りタイムアウトしない
-// カメラが多いため実害は小さい想定だが、長時間運用で問題が出れば追加する。
+// RTSP keepalive: SETUP応答の Session timeout の半分の間隔で OPTIONS を
+// 送り、カメラ側のセッションタイムアウトを更新する (rtsp_rx_task 内、
+// alc-gw-p4#1 残課題)。
 #include <string.h>
 #include <stdlib.h>
 
@@ -49,6 +49,9 @@ static const char *TAG = "relay";
 #define RECONNECT_MIN_BACKOFF_MS 1000
 #define RECONNECT_MAX_BACKOFF_MS 60000
 #define RTSP_RESPONSE_TIMEOUT_MS 10000
+// Session timeout ぎりぎりに送るとネットワーク遅延で間に合わないおそれが
+// あるため、半分の間隔でOPTIONSキープアライブを送る
+#define RTSP_KEEPALIVE_SAFETY_DIVISOR 2
 // esp_peer_main_loop を pump する間隔。公式サンプル peer_demo.c と同じ駆動方法
 #define PEER_MAIN_LOOP_INTERVAL_MS 10
 
@@ -179,6 +182,11 @@ static void rtsp_rx_task(void *arg) {
         rtsp_demux_feed(&s->demux, buf, buffered);
     }
 
+    uint32_t timeout_sec = rtsp_client_get_session_timeout_sec(s->rtsp);
+    int64_t keepalive_interval_us =
+        (int64_t)(timeout_sec > 0 ? timeout_sec : 60) * 1000000LL / RTSP_KEEPALIVE_SAFETY_DIVISOR;
+    int64_t last_keepalive_us = esp_timer_get_time();
+
     while (!s->rtsp_rx_should_stop) {
         int n = io->recv(io_ctx, buf, sizeof(buf), 1000);
         if (n < 0) {
@@ -188,6 +196,14 @@ static void rtsp_rx_task(void *arg) {
         }
         if (n > 0) {
             rtsp_demux_feed(&s->demux, buf, (size_t)n);
+        }
+
+        // io->recv のタイムアウト(1000ms)が下限の分解能になるため、データが
+        // 流れていない間もこのループは定期的に回ってくる
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - last_keepalive_us >= keepalive_interval_us) {
+            rtsp_client_send_keepalive(s->rtsp);
+            last_keepalive_us = now_us;
         }
     }
     xEventGroupSetBits(s->events, EVT_RTSP_RX_STOPPED);
