@@ -1,0 +1,24 @@
+# alc-gw-p4
+
+M5Stack Unit PoE-P4 (ESP32-P4) 向け、C212 カメラ映像を RTSP pull → WHIP publish で中継するファームウェア。
+
+[alc-gw](https://github.com/ippoan/alc-gw) の WHIP publish 実装 (Go/pion) の "P4 版" にあたる。管理者向け遠隔点呼の全景配信で、alc-gw が Windows GW 拠点向け、こちらは PoE-P4 (Windowsレス) 拠点向けの中継経路を担う想定。
+
+## 現状
+
+- Unit PoE-P4 実機での書き込み・動作確認まで完了 ([docs/hardware-notes.md](docs/hardware-notes.md))
+- 中継本体 (esp_media_protocols での RTSP client pull → esp_peer_send_video での WHIP publish) は未実装
+
+## examples/hello_world
+
+ESP-IDF 標準サンプルを、手元の実機 (rev v1.3) 向けに `sdkconfig.defaults` を調整したもの。実機の書き込み疎通確認に使用。
+
+```powershell
+$env:IDF_TOOLS_PATH = "C:\t\.embuild"
+cd examples/hello_world
+& "C:\t\.embuild\esp-idf\v5.5.3\export.ps1"
+idf.py set-target esp32p4
+idf.py -p COM9 build flash monitor
+```
+
+詳細は [docs/hardware-notes.md](docs/hardware-notes.md) を参照。
