@@ -5,7 +5,7 @@
 # ビルド可能)。PR3 で lwip ソケットを使う実装ファイルを追加する際は、
 # host_test (linux target) から除外するため target 分岐を追加すること。
 idf_component_register(
-    SRCS "src/rtsp_digest.c"
+    SRCS "src/rtsp_digest.c" "src/rtsp_sdp.c"
     INCLUDE_DIRS "include"
     REQUIRES mbedtls
 )
