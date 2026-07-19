@@ -9,7 +9,9 @@
 # 再利用される。手動キャッシュ設定は不要)。
 #
 # ビルド対象: examples/hello_world (実機書き込み疎通確認用、docs/hardware-notes.md
-# 参照) + relay (alc-gw-p4#1 の中継本体、リポジトリルート)。
+# 参照) + relay (alc-gw-p4#1 の中継本体、リポジトリルート) +
+# host_test_rtsp (components/rtsp_client の digest/SDP/状態遷移ロジックを
+# 実機無しで検証する ESP-IDF linux target ビルド。PR1 で追加)。
 name: ci
 
 on:
@@ -44,8 +46,22 @@ jobs:
         include:
           - name: hello_world
             path: examples/hello_world
+            target: esp32p4
+            command: idf.py build
           - name: relay
             path: .
+            target: esp32p4
+            command: idf.py build
+          # linux target での host テスト。実機・esp32p4 トールチェーンなしで
+          # digest/SDP/RTSP状態遷移のロジックを検証する (components/rtsp_client/host_test)。
+          # 【要確認、環境リスク】esp-idf-ci-action の Docker イメージで linux target
+          # ビルドが通るか、--preview フラグが v5.5.3 でまだ必要かは未検証。
+          # 通らない場合は素の ubuntu-latest job + gcc + mbedtls の md5/base64 実装を
+          # vendor するフォールバックに切り替える (実装計画 PR1 のリスク節参照)。
+          - name: host_test_rtsp
+            path: components/rtsp_client/host_test
+            target: linux
+            command: idf.py --preview build && ./build/rtsp_client_host_test.elf
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,8 +70,9 @@ jobs:
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: ${{ env.ESP_IDF_VERSION }}
-          target: esp32p4
+          target: ${{ matrix.target }}
           path: ${{ matrix.path }}
+          command: ${{ matrix.command }}
 
   auto-merge:
     name: Auto Merge
