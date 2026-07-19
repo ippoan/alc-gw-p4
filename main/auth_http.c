@@ -156,6 +156,65 @@ void auth_http_hub_token_free(auth_http_hub_token_t *t) {
     memset(t, 0, sizeof(*t));
 }
 
+esp_err_t auth_http_cam_relay_token(const char *base_url, const char *device_id, const char *device_secret,
+                                     auth_http_cam_relay_token_t *out) {
+    memset(out, 0, sizeof(*out));
+
+    cJSON *req = cJSON_CreateObject();
+    if (req == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    cJSON_AddStringToObject(req, "device_id", device_id);
+    cJSON_AddStringToObject(req, "device_secret", device_secret);
+    char *req_body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    if (req_body == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/device/cam-relay-token", base_url);
+
+    char *resp_body = NULL;
+    esp_err_t err = post_json(url, req_body, &resp_body);
+    free(req_body);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    cJSON *root = cJSON_Parse(resp_body);
+    free(resp_body);
+    if (root == NULL) {
+        return ESP_FAIL;
+    }
+    if (json_has_error(root) || !cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+
+    out->access_token = dup_json_string(root, "access_token");
+    out->site_id = dup_json_string(root, "site_id");
+    const cJSON *expires = cJSON_GetObjectItemCaseSensitive(root, "expires_in");
+    out->expires_in_s = cJSON_IsNumber(expires) ? expires->valueint : 0;
+    cJSON_Delete(root);
+
+    if (out->access_token == NULL || out->site_id == NULL) {
+        ESP_LOGW(TAG, "cam-relay-token response missing access_token/site_id");
+        auth_http_cam_relay_token_free(out);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+void auth_http_cam_relay_token_free(auth_http_cam_relay_token_t *t) {
+    if (t == NULL) {
+        return;
+    }
+    free(t->access_token);
+    free(t->site_id);
+    memset(t, 0, sizeof(*t));
+}
+
 esp_err_t auth_http_introspect(const char *base_url, const char *device_id, const char *device_secret,
                                 const char *token, auth_http_introspect_t *out) {
     memset(out, 0, sizeof(*out));

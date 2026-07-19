@@ -44,6 +44,8 @@
 #include "rtsp_demux.h"
 #include "h264_depacket.h"
 
+#include "credential.h"
+#include "auth_http.h"
 #include "signaling_client.h"
 #include "relay.h"
 
@@ -67,6 +69,10 @@ static const char *TAG = "relay";
 // signaling WebSocket の keepalive 間隔 (経路上の中間ノードでの idle
 // timeout 対策、best-effort)
 #define SIGNAL_PING_INTERVAL_MS 30000
+// mint した cam-relay-token の期限切れ前に自発的に繋ぎ直すための安全マージン
+// (期限ぎりぎりで再mintを試みてネットワーク遅延で間に合わない事故を避ける、
+// RTSP keepalive の RTSP_KEEPALIVE_SAFETY_DIVISOR と同じ考え方)
+#define TOKEN_REFRESH_MARGIN_S 60
 // 接続開始から SIGNALING_MSG_CONNECTED が届くまでの上限。これを超えたら
 // 失敗として扱い、外側のバックオフ再接続に委ねる
 #define SIGNAL_CONNECT_TIMEOUT_MS 15000
@@ -390,6 +396,36 @@ static void viewer_handle_answer(viewer_t *v, const char *answer_sdp) {
 // signaling セッションライフサイクル
 // ---------------------------------------------------------------------
 
+// device credential (role=device-gateway) があれば cam-relay-token を都度
+// mint し、無い/mint失敗なら静的トークン (CONFIG_RELAY_SIGNALING_TOKEN) に
+// フォールバックする (移行期共存、alc-gw-p4#2 テスト計画)。mint できたら
+// *out_minted_token に所有権を渡す (呼び出し側が free する。static token
+// にフォールバックした場合は NULL のまま)。*out_expiry_us は再mintすべき
+// 時刻 (static token の場合は運用側が失効させる前提で INT64_MAX)。
+static bool mint_or_fallback_token(char **out_minted_token, int64_t *out_expiry_us) {
+    *out_minted_token = NULL;
+    *out_expiry_us = INT64_MAX;
+
+    char device_id[CREDENTIAL_ID_MAX_LEN];
+    char device_secret[CREDENTIAL_SECRET_MAX_LEN];
+    if (!credential_load(device_id, sizeof(device_id), device_secret, sizeof(device_secret))) {
+        return false;
+    }
+
+    auth_http_cam_relay_token_t minted;
+    esp_err_t err = auth_http_cam_relay_token(CONFIG_RELAY_AUTH_WORKER_URL, device_id, device_secret, &minted);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "cam-relay-token mint失敗、静的トークンにフォールバック");
+        return false;
+    }
+
+    *out_minted_token = minted.access_token; // 所有権を呼び出し側へ移す
+    *out_expiry_us =
+        esp_timer_get_time() + ((int64_t)minted.expires_in_s - TOKEN_REFRESH_MARGIN_S) * 1000000;
+    free(minted.site_id);
+    return true;
+}
+
 // 1 回の signaling WebSocket 接続のライフサイクル: 接続 → admin の出入りに
 // 応じて viewer を開閉するループ → 接続が切れる/タイムアウトしたら戻る。
 // 戻り値: signaling に一度でも接続できていれば true (呼び出し側の
@@ -401,9 +437,14 @@ static bool run_signaling_session(void) {
         return false;
     }
 
+    char *minted_token = NULL;
+    int64_t token_expiry_us = INT64_MAX;
+    mint_or_fallback_token(&minted_token, &token_expiry_us);
+    const char *token = minted_token != NULL ? minted_token : CONFIG_RELAY_SIGNALING_TOKEN;
+
     signaling_client_t *sig = NULL;
-    esp_err_t err =
-        signaling_client_connect(CONFIG_RELAY_SIGNALING_URL, CONFIG_RELAY_SIGNALING_TOKEN, q, &sig);
+    esp_err_t err = signaling_client_connect(CONFIG_RELAY_SIGNALING_URL, token, q, &sig);
+    free(minted_token);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "signaling_client_connect failed: %s", esp_err_to_name(err));
         vQueueDelete(q);
@@ -487,6 +528,17 @@ static bool run_signaling_session(void) {
         if (signaling_up && now_us - last_ping_us >= (int64_t)SIGNAL_PING_INTERVAL_MS * 1000) {
             signaling_client_ping(sig);
             last_ping_us = now_us;
+        }
+
+        // mint した token の期限が近づいたら、admin 非接続中 (viewer が無い)
+        // タイミングを見計らって自発的に繋ぎ直し、新しい token で再mintする。
+        // viewer 接続中は打ち切らず、次に空いたタイミングまで持ち越す
+        // (無停止でpublish継続、alc-gw-p4#2 テスト計画)。
+        if (signaling_up && v == NULL && now_us >= token_expiry_us) {
+            ESP_LOGI(TAG, "cam-relay-token 期限間近のため再接続します");
+            signaling_client_close(sig);
+            vQueueDelete(q);
+            return true;
         }
     }
 }
