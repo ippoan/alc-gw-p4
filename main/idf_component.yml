@@ -1,0 +1,11 @@
+dependencies:
+  idf: ">=5.0"
+  # WHIP publish (peer connection, DTLS/ICE)。whip_signal (esp-webrtc-solution)
+  # は https_client.h の依存が未宣言のビルドエラーになるため使わず、
+  # WHIP のシグナリング (POST/DELETE) は main/whip_client.c で直接実装する
+  # (docs/whip-convention.md 参照)
+  espressif/esp_peer: "^1.5.0"
+  # RTSP client pull (stream2 の H.264 を受信)。プリビルドライブラリ
+  # (esp32p4 対応済み)、RTSP_CLIENT_PLAY + video_enable=true の組み合わせは
+  # Espressif の公式サンプルに実例が無く未検証 — main/relay.c のコメント参照
+  espressif/esp_media_protocols: "^0.6.2"

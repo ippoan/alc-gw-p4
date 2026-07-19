@@ -7,7 +7,19 @@ M5Stack Unit PoE-P4 (ESP32-P4) 向け、C212 カメラ映像を RTSP pull → WH
 ## 現状
 
 - Unit PoE-P4 実機での書き込み・動作確認まで完了 ([docs/hardware-notes.md](docs/hardware-notes.md))
-- 中継本体 (esp_media_protocols での RTSP client pull → esp_peer_send_video での WHIP publish) は未実装
+- 中継本体 (`main/`, [alc-gw-p4#1](https://github.com/ippoan/alc-gw-p4/issues/1)): CI で esp32p4 向けビルド確認済み。**実機での動作確認は未実施** — 特に `esp_media_protocols` の `RTSP_CLIENT_PLAY` + 映像有効の組み合わせは Espressif 公式サンプルに実例が無く、`receive_video` の NAL 境界/Annex-B framing が未検証 (`main/relay.c` のコメント参照)
+
+## main/ (中継本体)
+
+C212 の stream2 (RTSP) を pull し、無トランスコードで WHIP publish する。設定は `idf.py menuconfig` の "alc-gw-p4 Relay Configuration" (RTSP URL / WHIP URL / トークン、v1 はビルド時埋め込み)。規約は [ippoan/alc-gw の docs/whip-convention.md](https://github.com/ippoan/alc-gw/blob/main/docs/whip-convention.md) と共通。
+
+```powershell
+$env:IDF_TOOLS_PATH = "C:\t\.embuild"
+& "C:\t\.embuild\esp-idf\v5.5.3\export.ps1"
+idf.py set-target esp32p4
+idf.py menuconfig   # RTSP URL / WHIP URL / トークンを設定
+idf.py -p COM9 build flash monitor
+```
 
 ## examples/hello_world
 

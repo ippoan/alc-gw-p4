@@ -1,0 +1,25 @@
+menu "alc-gw-p4 Relay Configuration"
+
+    config RELAY_RTSP_URL
+        string "C212 RTSP URL (stream2, 転送用)"
+        default "rtsp://user:pass@192.168.1.50:554/stream2"
+        help
+            C212 の転送用 RTSP URL (360p サブストリーム)。ローカル表示は
+            行わないため stream1 とは別。docs/whip-convention.md 参照。
+
+    config RELAY_WHIP_URL
+        string "WHIP publish endpoint"
+        default "https://sfu.example.net/ingest/site1"
+        help
+            https://<sfu>/ingest/<拠点ID> 形式。ippoan/alc-gw の
+            docs/whip-convention.md と共通の規約。
+
+    config RELAY_WHIP_TOKEN
+        string "WHIP Bearer token (拠点トークン)"
+        default ""
+        help
+            v1 はキッティング時の静的値 (config.json 手書きに相当、本ファーム
+            では sdkconfig 経由のビルド時埋め込み)。将来 alc-gw-p4#2 で
+            device credential からの mint に移行予定。
+
+endmenu
