@@ -22,19 +22,23 @@ menu "alc-gw-p4 Relay Configuration"
         help
             RTSP Digest 認証のパスワード。
 
-    config RELAY_WHIP_URL
-        string "WHIP publish endpoint"
-        default "https://sfu.example.net/ingest/site1"
+    config RELAY_SIGNALING_URL
+        string "Camera signaling room WebSocket URL"
+        default "wss://alc-signaling.example.workers.dev/cam-room/site1"
         help
-            https://<sfu>/ingest/<拠点ID> 形式。ippoan/alc-gw の
-            docs/whip-convention.md と共通の規約。
+            wss://<signaling>/cam-room/<拠点ID> 形式 (role=device は
+            signaling_client が自動付与)。ippoan/alc-app cf-alc-signaling
+            の CameraSignalingRoom (ippoan/alc-app#129) と話す。旧
+            WHIP publish endpoint (https://<sfu>/ingest/<拠点ID>) から
+            置き換え。
 
-    config RELAY_WHIP_TOKEN
-        string "WHIP Bearer token (拠点トークン)"
+    config RELAY_SIGNALING_TOKEN
+        string "Signaling Bearer token (拠点トークン)"
         default ""
         help
             v1 はキッティング時の静的値 (config.json 手書きに相当、本ファーム
-            では sdkconfig 経由のビルド時埋め込み)。将来 alc-gw-p4#2 で
-            device credential からの mint に移行予定。
+            では sdkconfig 経由のビルド時埋め込み)。DO 側はまだこのヘッダを
+            検証しない (ippoan/auth-worker#406 完了後、device credential
+            からの mint に移行予定)。
 
 endmenu

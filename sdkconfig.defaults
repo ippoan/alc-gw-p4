@@ -17,9 +17,13 @@ CONFIG_EXAMPLE_ETH_MDIO_GPIO=52
 CONFIG_EXAMPLE_ETH_PHY_RST_GPIO=51
 CONFIG_EXAMPLE_ETH_PHY_ADDR=1
 
-# esp_peer (WebRTC/WHIP) は DTLS-SRTP (RFC 5764) 鍵交換に mbedTLS の
+# esp_peer (WebRTC) は DTLS-SRTP (RFC 5764) 鍵交換に mbedTLS の
 # DTLS-SRTP サポートを要求するが、既定では無効 (どちらも default=n)。
 # 有効化しないと components/espressif__esp_peer/src/dtls_srtp.c が
 # mbedtls_ssl_conf_dtls_srtp_protection_profiles 等の未宣言エラーでビルド失敗する
 CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
 CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
+
+# signaling_client (wss://) のサーバー証明書検証用。ESP-IDF v5.x は既定で
+# y のはずだが明示しておく (ippoan/alc-app#129)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y

@@ -1,23 +1,26 @@
 # alc-gw-p4
 
-M5Stack Unit PoE-P4 (ESP32-P4) 向け、C212 カメラ映像を RTSP pull → WHIP publish で中継するファームウェア。
+M5Stack Unit PoE-P4 (ESP32-P4) 向け、C212 カメラ映像を RTSP pull → 拠点カメラ用シグナリング Durable Object 経由の P2P WebRTC で中継するファームウェア。
 
-[alc-gw](https://github.com/ippoan/alc-gw) の WHIP publish 実装 (Go/pion) の "P4 版" にあたる。管理者向け遠隔点呼の全景配信で、alc-gw が Windows GW 拠点向け、こちらは PoE-P4 (Windowsレス) 拠点向けの中継経路を担う想定。
+[alc-gw](https://github.com/ippoan/alc-gw) の中継実装 (Go/pion) の "P4 版" にあたる。管理者向け遠隔点呼の全景配信で、alc-gw が Windows GW 拠点向け、こちらは PoE-P4 (Windowsレス) 拠点向けの中継経路を担う想定。
+
+当初は WHIP (RFC 9725) + クラウド SFU 方式だったが、同時複数視聴が不要なこと・[ippoan/alc-app](https://github.com/ippoan/alc-app) の cf-alc-signaling (Durable Objects) が既にあることから、「本ファームが signaling room へ常時接続し、admin (管理者ブラウザ) が現れた時だけ SDP を交換して P2P を開通させる」方式に転換した ([ippoan/alc-app#129](https://github.com/ippoan/alc-app/issues/129))。
 
 ## 現状
 
 - Unit PoE-P4 実機での書き込み・動作確認まで完了 ([docs/hardware-notes.md](docs/hardware-notes.md))
-- 中継本体 (`main/`, [alc-gw-p4#1](https://github.com/ippoan/alc-gw-p4/issues/1)): 実機 (Tapo C212) で RTSP Digest 認証 (DESCRIBE 401→再送→200) から SETUP/PLAY までの通信を確認済み。自前 RTSP クライアント (`components/rtsp_client`) が `esp_media_protocols` (Digest 認証未対応) を置き換えている。WHIP publish 部分は SFU 未接続のため未検証 (`CONFIG_RELAY_WHIP_URL` は実運用時に設定が必要)。
+- RTSP 側 (`main/`, [alc-gw-p4#1](https://github.com/ippoan/alc-gw-p4/issues/1)): 実機 (Tapo C212) で RTSP Digest 認証 (DESCRIBE 401→再送→200) から SETUP/PLAY までの通信を確認済み。自前 RTSP クライアント (`components/rtsp_client`) が `esp_media_protocols` (Digest 認証未対応) を置き換えている
+- signaling 側: WHIP から DO シグナリング + P2P への転換を実装中 ([ippoan/alc-app#129](https://github.com/ippoan/alc-app/issues/129))。実SFU/実signaling接続時の動作確認は未検証 (`CONFIG_RELAY_SIGNALING_URL` は実運用時に設定が必要)
 
 ## main/ (中継本体)
 
-C212 の stream2 (RTSP) を pull し、無トランスコードで WHIP publish する。設定は `idf.py menuconfig` の "alc-gw-p4 Relay Configuration" (RTSP URL / WHIP URL / トークン、v1 はビルド時埋め込み)。規約は [ippoan/alc-gw の docs/whip-convention.md](https://github.com/ippoan/alc-gw/blob/main/docs/whip-convention.md) と共通。
+C212 の stream2 (RTSP) を pull し、無トランスコードで admin へ P2P WebRTC 配信する。設定は `idf.py menuconfig` の "alc-gw-p4 Relay Configuration" (RTSP URL / signaling room の WebSocket URL / トークン、v1 はビルド時埋め込み)。
 
 ```powershell
 $env:IDF_TOOLS_PATH = "C:\t\.embuild"
 & "C:\t\.embuild\esp-idf\v5.5.3\export.ps1"
 idf.py set-target esp32p4
-idf.py menuconfig   # RTSP URL / WHIP URL / トークンを設定
+idf.py menuconfig   # RTSP URL / signaling URL / トークンを設定
 idf.py -p COM9 build flash monitor
 ```
 
