@@ -1,10 +1,13 @@
 dependencies:
   idf: ">=5.0"
-  # WHIP publish (peer connection, DTLS/ICE)。whip_signal (esp-webrtc-solution)
+  # WebRTC peer connection (DTLS/ICE/送信)。whip_signal (esp-webrtc-solution)
   # は https_client.h の依存が未宣言のビルドエラーになるため使わず、
-  # WHIP のシグナリング (POST/DELETE) は main/whip_client.c で直接実装する
-  # (docs/whip-convention.md 参照)
+  # シグナリングは main/signaling_client.c で自前実装する (WebSocket、
+  # ippoan/alc-app cf-alc-signaling の CameraSignalingRoom と話す、
+  # ippoan/alc-app#129)。
   espressif/esp_peer: "^1.5.0"
+  # シグナリング用 WebSocket クライアント (旧: WHIP HTTP POST/DELETE)。
+  espressif/esp_websocket_client: "^1.7"
   # RTSP client pull (stream2 の H.264 を受信) は components/rtsp_client
   # (自前実装、alc-gw-p4#1) を使う。esp_media_protocols はDigest認証
   # 未対応で実機 (Tapo C212) に対して機能しなかったため置き換えた。

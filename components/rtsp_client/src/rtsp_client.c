@@ -165,7 +165,7 @@ static esp_err_t parse_rtsp_url(const char *url, char *host, size_t host_cap,
 // 組み立てる。相対の場合は base_uri (DESCRIBEのリクエストURI) に連結する。
 // 【既知の簡略化】Content-Base ヘッダは見ておらず、常に base_uri を基準にする。
 // 単純なカメラでは Content-Base がリクエストURIと同じことが多いため v1 では
-// 割り切る (whip_client.c の resolve_location と同様の方針)。
+// 割り切る。
 static esp_err_t resolve_control_uri(const char *base_uri, const rtsp_sdp_video_t *sdp,
                                       char *out, size_t out_cap) {
     const char *control = sdp->has_control ? sdp->control : "*";

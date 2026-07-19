@@ -1,6 +1,7 @@
-// alc-gw-p4: C212 の RTSP (stream2) を WHIP publish へ中継するファームウェア
-// (alc-gw-p4#1)。Unit PoE-P4 (ESP32-P4 + IP101GRI, 有線 Ethernet のみ・無線なし)。
-// 詳細は docs/whip-convention.md (エンドポイント/認証/コーデック/ICE/再接続の規約)。
+// alc-gw-p4: C212 の RTSP (stream2) を、拠点カメラ用シグナリング Durable
+// Object 経由の P2P WebRTC で中継するファームウェア (alc-gw-p4#1)。
+// Unit PoE-P4 (ESP32-P4 + IP101GRI, 有線 Ethernet のみ・無線なし)。
+// 詳細は ippoan/alc-app#129 (シグナリング方式) および relay.c の説明を参照。
 #include "esp_err.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
