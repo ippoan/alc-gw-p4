@@ -27,3 +27,13 @@ CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
 # signaling_client (wss://) のサーバー証明書検証用。ESP-IDF v5.x は既定で
 # y のはずだが明示しておく (ippoan/alc-app#129)
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+
+# hub_link (ippoan/alc-app-s3#83 GW側実装): CoreS3 が接続する WS:9000
+# サーバーに esp_http_server の WebSocket サポートが要る (既定 n)
+CONFIG_HTTPD_WS_SUPPORT=y
+
+# 既定の partitions_singleapp.csv (factory 1MB 固定) は hub_link 追加後に
+# 空き 0% まで逼迫したため、実機 flash サイズ (2MB) に合わせて factory app
+# を 0x1E0000 (1.875MB) まで拡張したカスタムテーブル (partitions.csv) に切替
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

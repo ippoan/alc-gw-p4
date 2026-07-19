@@ -9,6 +9,8 @@
 #include "eth_init.h"
 #include "relay.h"
 #include "esp_peer.h"
+#include "console_cmds.h"
+#include "hub_link.h"
 
 static const char *TAG = "main";
 
@@ -20,10 +22,22 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(err);
 
+    // device credential (device_id/device_secret) 注入用の `cred` コマンド
+    // (ippoan/alc-app-s3#83 GW側実装)。失敗してもRTSP中継自体は続行する
+    if (console_cmds_start() != ESP_OK) {
+        ESP_LOGW(TAG, "console start failed (credential 注入手段なしで続行)");
+    }
+
     ESP_ERROR_CHECK(app_eth_init());
     ESP_LOGI(TAG, "waiting for ethernet link...");
     if (!app_eth_wait_for_ip(30000)) {
         ESP_LOGW(TAG, "no IP after 30s, continuing anyway (relay will retry with backoff)");
+    }
+
+    // hub_link: CoreS3 が接続してくる GW 側 (WSサーバー :9000 + ビーコン
+    // :9001、遠隔・無人拠点で alc-gw の代わりを担う、ippoan/alc-app-s3#83)
+    if (hub_link_start() != ESP_OK) {
+        ESP_LOGW(TAG, "hub_link start failed (CoreS3 連携なしで続行)");
     }
 
     // DTLS証明書生成の事前ウォームアップ (esp_peer 公式サンプルの推奨)
