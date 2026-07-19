@@ -4,3 +4,6 @@ managed_components/
 dependencies.lock
 sdkconfig
 sdkconfig.old
+
+# ローカルビルド & 実機書き込みスクリプト (alc-app-s3 と同じ運用)
+local/

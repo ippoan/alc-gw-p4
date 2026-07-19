@@ -41,4 +41,12 @@ menu "alc-gw-p4 Relay Configuration"
             検証しない (ippoan/auth-worker#406 完了後、device credential
             からの mint に移行予定)。
 
+    config RELAY_AUTH_WORKER_URL
+        string "auth-worker base URL (hub_link 相互認証用)"
+        default "https://auth.ippoan.org"
+        help
+            POST /device/hub-token・POST /device/introspect の宛先
+            (ippoan/auth-worker#406、ippoan/alc-app-s3#83 GW側実装)。
+            staging で検証する場合は auth-staging.ippoan.org 等に変更する。
+
 endmenu
