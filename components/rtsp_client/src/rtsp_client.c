@@ -665,6 +665,35 @@ esp_err_t rtsp_client_teardown(rtsp_client_t *c) {
     return err;
 }
 
+uint32_t rtsp_client_get_session_timeout_sec(const rtsp_client_t *c) {
+    if (c == NULL || !c->have_session) {
+        return 0;
+    }
+    return c->session_timeout_sec;
+}
+
+esp_err_t rtsp_client_send_keepalive(rtsp_client_t *c) {
+    if (c == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!c->have_session) {
+        return ESP_OK; // セッション確立前 (呼び出し側の想定外だが害はない)
+    }
+    char auth_line[512] = "";
+    if (c->have_challenge) {
+        char auth_value[400];
+        if (build_auth_header_value(c, "OPTIONS", c->base_uri, auth_value, sizeof(auth_value)) == ESP_OK) {
+            snprintf(auth_line, sizeof(auth_line), "Authorization: %s\r\n", auth_value);
+        }
+    }
+    int cseq = c->cseq++;
+    esp_err_t err = send_request(c, "OPTIONS", c->base_uri, auth_line, "", cseq);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "keepalive OPTIONS send failed: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
 void rtsp_client_close(rtsp_client_t *c) {
     if (c == NULL) {
         return;

@@ -254,6 +254,126 @@ TEST_CASE("rtsp_client: H264映像が無いSDPはESP_ERR_NOT_SUPPORTED", "[rtsp_
     rtsp_client_close(c);
 }
 
+TEST_CASE("rtsp_client: PLAY成功後、session timeoutを取得できる", "[rtsp_client]") {
+    const mock_step_t steps[] = {
+        {
+            .expect_contains = "OPTIONS rtsp://192.0.2.1:554/stream2 RTSP/1.0",
+            .response = "RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n",
+        },
+        {
+            .expect_contains = "DESCRIBE rtsp://192.0.2.1:554/stream2 RTSP/1.0",
+            .response = "RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: 89\r\n\r\n"
+                        "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=Stream\r\nt=0 0\r\n"
+                        "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track1\r\n",
+        },
+        {
+            .expect_contains = "SETUP rtsp://192.0.2.1:554/stream2/track1 RTSP/1.0",
+            .response = "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: 12345678;timeout=30\r\n"
+                        "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+        },
+        {
+            .expect_contains = "PLAY rtsp://192.0.2.1:554/stream2 RTSP/1.0",
+            .response = "RTSP/1.0 200 OK\r\nCSeq: 4\r\nSession: 12345678\r\n\r\n",
+        },
+    };
+
+    mock_io_ctx_t mock;
+    memset(&mock, 0, sizeof(mock));
+    mock.steps = steps;
+    mock.step_count = sizeof(steps) / sizeof(steps[0]);
+
+    rtsp_client_config_t cfg = {
+        .url = "rtsp://192.0.2.1:554/stream2",
+        .io = &mock_ops,
+        .io_ctx = &mock,
+        .response_timeout_ms = 1000,
+    };
+
+    rtsp_client_t *c = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, rtsp_client_open(&cfg, &c));
+    TEST_ASSERT_EQUAL(0, rtsp_client_get_session_timeout_sec(c)); // PLAY前は0
+
+    rtsp_sdp_video_t video;
+    TEST_ASSERT_EQUAL(ESP_OK, rtsp_client_play(c, &video));
+    TEST_ASSERT_FALSE(mock.mismatch);
+    TEST_ASSERT_EQUAL(30, rtsp_client_get_session_timeout_sec(c));
+
+    rtsp_client_close(c);
+}
+
+TEST_CASE("rtsp_client: keepaliveはSessionヘッダ付きOPTIONSをfire-and-forgetで送る", "[rtsp_client]") {
+    const mock_step_t steps[] = {
+        {
+            .expect_contains = "OPTIONS rtsp://192.0.2.1:554/stream2 RTSP/1.0",
+            .response = "RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n",
+        },
+        {
+            .expect_contains = "DESCRIBE rtsp://192.0.2.1:554/stream2 RTSP/1.0",
+            .response = "RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: 89\r\n\r\n"
+                        "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=Stream\r\nt=0 0\r\n"
+                        "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:track1\r\n",
+        },
+        {
+            .expect_contains = "SETUP rtsp://192.0.2.1:554/stream2/track1 RTSP/1.0",
+            .response = "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: 12345678;timeout=30\r\n"
+                        "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
+        },
+        {
+            .expect_contains = "PLAY rtsp://192.0.2.1:554/stream2 RTSP/1.0",
+            .response = "RTSP/1.0 200 OK\r\nCSeq: 4\r\nSession: 12345678\r\n\r\n",
+        },
+        {
+            // keepalive: 認証なし・Sessionヘッダ付きのOPTIONSを送るのみで
+            // 応答は読まない (mock_recvが呼ばれないためresponseは未使用)
+            .expect_contains = "OPTIONS rtsp://192.0.2.1:554/stream2 RTSP/1.0",
+            .response = "",
+        },
+    };
+
+    mock_io_ctx_t mock;
+    memset(&mock, 0, sizeof(mock));
+    mock.steps = steps;
+    mock.step_count = sizeof(steps) / sizeof(steps[0]);
+
+    rtsp_client_config_t cfg = {
+        .url = "rtsp://192.0.2.1:554/stream2",
+        .io = &mock_ops,
+        .io_ctx = &mock,
+        .response_timeout_ms = 1000,
+    };
+
+    rtsp_client_t *c = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, rtsp_client_open(&cfg, &c));
+
+    rtsp_sdp_video_t video;
+    TEST_ASSERT_EQUAL(ESP_OK, rtsp_client_play(c, &video));
+    TEST_ASSERT_FALSE(mock.mismatch);
+
+    TEST_ASSERT_EQUAL(ESP_OK, rtsp_client_send_keepalive(c));
+    TEST_ASSERT_FALSE(mock.mismatch);
+    TEST_ASSERT_TRUE(strstr(mock.last_sent, "Session: 12345678") != NULL);
+
+    rtsp_client_close(c);
+}
+
+TEST_CASE("rtsp_client: セッション確立前のkeepaliveは何もしない", "[rtsp_client]") {
+    mock_io_ctx_t mock;
+    memset(&mock, 0, sizeof(mock));
+
+    rtsp_client_config_t cfg = {
+        .url = "rtsp://192.0.2.1:554/stream2",
+        .io = &mock_ops,
+        .io_ctx = &mock,
+        .response_timeout_ms = 1000,
+    };
+
+    rtsp_client_t *c = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, rtsp_client_open(&cfg, &c));
+    TEST_ASSERT_EQUAL(ESP_OK, rtsp_client_send_keepalive(c)); // 何も送らずOK
+
+    rtsp_client_close(c);
+}
+
 TEST_CASE("rtsp_client: rtsp URLの解析 (デフォルトポート554)", "[rtsp_client]") {
     const mock_step_t steps[] = {
         {
