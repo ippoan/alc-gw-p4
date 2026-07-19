@@ -37,3 +37,13 @@ CONFIG_HTTPD_WS_SUPPORT=y
 # を 0x1E0000 (1.875MB) まで拡張したカスタムテーブル (partitions.csv) に切替
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# この基板は PC と native USB Serial/JTAG (espflash/esptool が使うのと同じ
+# COM ポート) でしか繋がっておらず、GPIO37/38 (既定の UART0 console) には
+# 何も配線されていない。既定のまま (UART0 primary + USB を secondary で
+# ログだけミラー) だと、console_cmds.c の対話コンソール (stdin) は誰も
+# 繋いでいない UART0 の RX を待ち続け、USB 経由でどんなコマンドを送っても
+# 一切応答が返らない事故になる (実機検証で特定、console_cmds.c 側も
+# esp_console_new_repl_usb_serial_jtag に合わせて修正済み)。primary console
+# 自体も USB Serial/JTAG に切り替え、UART0 との二重駆動を無くす。
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

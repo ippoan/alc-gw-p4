@@ -7,15 +7,19 @@ cmake_minimum_required(VERSION 3.16)
 # の whip_demo が esp32p4 ターゲットで使っているのと同じパターン
 # (docs/hardware-notes.md の PHY GPIO 設定は sdkconfig.defaults 側で指定)。
 #
-# $ENV{IDF_TARGET} を見る (${IDF_TARGET} という素の CMake 変数ではない):
 # project() / include(project.cmake) より前のこの時点では IDF_TARGET は
-# まだ CMake 変数として解決されておらず、確実に見えるのは環境変数のみ。
-# `idf.py set-target esp32p4 && idf.py build` (ローカル開発) では
-# set-target が環境変数を設定するため通るが、CI (espressif/esp-idf-ci-action)
-# は set-target を経由せず IDF_TARGET 環境変数だけを渡して直接 build するため、
-# ${IDF_TARGET} のままだと条件が常に false になり ethernet_init が解決できず
-# ビルドエラーになる (実際に CI で踏んだ)
-if("$ENV{IDF_TARGET}" STREQUAL "esp32p4")
+# ESP-IDF 自身の「sdkconfig.defaults から推測」ロジック (project.cmake 内、
+# この if より後) ではまだ解決されていないため、ここでは自前で判定する必要が
+# ある。判定元は 2 通りありどちらも有効な経路として実際に確認した:
+#   - `idf.py set-target esp32p4` 経由 (ローカル開発) は `-DIDF_TARGET=esp32p4`
+#     という cmake cache 変数として渡ってくる (env var ではない — ここは
+#     以前 $ENV{IDF_TARGET} のみを見ていて実際には常に false だった。
+#     `idf.py set-target` は os.environ を設定しないため — ローカルでの
+#     初回ビルドで実際に踏んだ)。
+#   - CI (espressif/esp-idf-ci-action) は set-target を経由せず、素の環境変数
+#     IDF_TARGET だけを渡して直接 build する。
+# 両方を OR で見る。
+if("$ENV{IDF_TARGET}" STREQUAL "esp32p4" OR "${IDF_TARGET}" STREQUAL "esp32p4")
     set(EXTRA_COMPONENT_DIRS "$ENV{IDF_PATH}/examples/ethernet/basic/components/ethernet_init")
 endif()
 

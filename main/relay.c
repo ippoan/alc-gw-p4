@@ -512,5 +512,14 @@ static void relay_task(void *arg) {
 }
 
 void relay_start(void) {
+    // signaling URL 未設定 (既定は空文字、RTSP_USERNAME/PASSWORD と同じ規約)
+    // なら relay_task 自体を起動しない。以前はダミーの example.workers.dev
+    // を既定にしていたため、未設定のまま起動すると DNS 解決失敗の再接続
+    // ループが priority 5 で回り続け、priority 2 の console (esp_console)
+    // タスクが実質的に応答不能になる事故があった。
+    if (CONFIG_RELAY_SIGNALING_URL[0] == '\0') {
+        ESP_LOGI(TAG, "RELAY_SIGNALING_URL 未設定のため camera relay を起動しません");
+        return;
+    }
     xTaskCreate(relay_task, "relay", 8192, NULL, 5, NULL);
 }
