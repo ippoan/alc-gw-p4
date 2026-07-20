@@ -81,6 +81,12 @@ static volatile bool s_relay_paused;
 // 接続開始から SIGNALING_MSG_CONNECTED が届くまでの上限。これを超えたら
 // 失敗として扱い、外側のバックオフ再接続に委ねる
 #define SIGNAL_CONNECT_TIMEOUT_MS 15000
+// admin が signaling に残ったまま peer/RTSP が失敗した場合 (DTLSハンドシェイク
+// 失敗、カメラ側の一時的な切断等) に、admin の再接続操作 (ブラウザ再読み込み)
+// を待たず自動で viewer を再構築するためのバックオフ。signaling再接続と同じ
+// 1s→60s 指数バックオフの考え方 (alc-gw-p4#19)。
+#define PEER_RETRY_MIN_BACKOFF_MS 1000
+#define PEER_RETRY_MAX_BACKOFF_MS 60000
 
 // interleavedフレーム1つ分 (RTPは通常MTU程度に収まる)。demuxがこれを超える
 // フレームは安全にスキップする (rtsp_demuxのオーバーサイズ処理)
@@ -497,6 +503,14 @@ static bool run_signaling_session(void) {
     int64_t last_ping_us = esp_timer_get_time();
     viewer_t *v = NULL;
 
+    // admin が signaling room に居るかどうか (v はviewer/peerの生存状態でしか
+    // なく、peer失敗直後は両方NULLになり区別がつかないため別管理する)。
+    // admin_present の間に peer/RTSP が失敗したら、admin の操作を待たず
+    // peer_retry_deadline_us まで待って自動で viewer_start をやり直す。
+    bool admin_present = false;
+    int64_t peer_retry_deadline_us = 0;
+    uint32_t peer_retry_backoff_ms = PEER_RETRY_MIN_BACKOFF_MS;
+
     while (1) {
         if (s_relay_paused) {
             ESP_LOGI(TAG, "relay: pause要求により signaling セッションを終了します");
@@ -523,6 +537,8 @@ static bool run_signaling_session(void) {
                 return connected_once;
 
             case SIGNALING_MSG_PEER_JOINED_ADMIN:
+                admin_present = true;
+                peer_retry_backoff_ms = PEER_RETRY_MIN_BACKOFF_MS;
                 if (v == NULL) {
                     ESP_LOGI(TAG, "admin joined, starting viewer");
                     v = viewer_start(sig);
@@ -533,6 +549,7 @@ static bool run_signaling_session(void) {
                 break;
 
             case SIGNALING_MSG_PEER_LEFT_ADMIN:
+                admin_present = false;
                 if (v != NULL) {
                     ESP_LOGI(TAG, "admin left, closing viewer");
                     viewer_close(v);
@@ -569,10 +586,36 @@ static bool run_signaling_session(void) {
                          (bits & EVT_PEER_FAILED) != 0, (bits & EVT_RTSP_ERROR) != 0);
                 viewer_close(v);
                 v = NULL;
+                if (admin_present) {
+                    ESP_LOGI(TAG, "admin still present, retrying viewer in %ums",
+                             (unsigned)peer_retry_backoff_ms);
+                    peer_retry_deadline_us =
+                        esp_timer_get_time() + (int64_t)peer_retry_backoff_ms * 1000;
+                    peer_retry_backoff_ms = peer_retry_backoff_ms * 2 < PEER_RETRY_MAX_BACKOFF_MS
+                                                 ? peer_retry_backoff_ms * 2
+                                                 : PEER_RETRY_MAX_BACKOFF_MS;
+                }
             }
         }
 
         int64_t now_us = esp_timer_get_time();
+        // admin が離脱せずに残っている状態での自動再接続 (alc-gw-p4#19、ブラウザの
+        // リロードを待たずにDTLSハンドシェイク失敗等から復帰する)。admin が離脱
+        // していれば SIGNALING_MSG_PEER_JOINED_ADMIN の方で再開する。
+        if (v == NULL && admin_present && now_us >= peer_retry_deadline_us) {
+            ESP_LOGI(TAG, "retrying viewer after peer/rtsp failure");
+            v = viewer_start(sig);
+            if (v == NULL) {
+                ESP_LOGW(TAG, "viewer_start retry failed, will retry again in %ums",
+                         (unsigned)peer_retry_backoff_ms);
+                peer_retry_deadline_us =
+                    esp_timer_get_time() + (int64_t)peer_retry_backoff_ms * 1000;
+                peer_retry_backoff_ms = peer_retry_backoff_ms * 2 < PEER_RETRY_MAX_BACKOFF_MS
+                                             ? peer_retry_backoff_ms * 2
+                                             : PEER_RETRY_MAX_BACKOFF_MS;
+            }
+        }
+
         if (signaling_up && now_us - last_ping_us >= (int64_t)SIGNAL_PING_INTERVAL_MS * 1000) {
             signaling_client_ping(sig);
             last_ping_us = now_us;
