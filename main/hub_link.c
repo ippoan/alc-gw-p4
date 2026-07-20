@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 #include "esp_http_server.h"
 #include "esp_netif.h"
@@ -16,6 +17,12 @@
 #include "hub_link.h"
 
 static const char *TAG = "hub_link";
+
+// hub_link_stop()/再開のため、server ハンドルと beacon タスクの状態を保持する
+// (元々はどちらも hub_link_start() のローカル変数だった)。
+static httpd_handle_t s_server;
+static TaskHandle_t s_beacon_task;
+static volatile bool s_beacon_stop_requested;
 
 #define HUB_WS_PORT 9000
 #define BEACON_PORT 9001
@@ -249,6 +256,7 @@ static void beacon_task(void *arg) {
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
         ESP_LOGE(TAG, "beacon: socket() failed, ビーコン送信を諦めます (自動発見無効)");
+        s_beacon_task = NULL;
         vTaskDelete(NULL);
         return;
     }
@@ -261,7 +269,7 @@ static void beacon_task(void *arg) {
     };
     dest.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
-    for (;;) {
+    while (!s_beacon_stop_requested) {
         esp_netif_t *netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
         esp_netif_ip_info_t ip_info;
         if (netif != NULL && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
@@ -277,9 +285,17 @@ static void beacon_task(void *arg) {
         }
         vTaskDelay(pdMS_TO_TICKS(BEACON_INTERVAL_MS));
     }
+    close(sock);
+    s_beacon_task = NULL;
+    vTaskDelete(NULL);
 }
 
 esp_err_t hub_link_start(void) {
+    if (s_server != NULL) {
+        // hub_link_stop() 後の再開で呼び直しても安全 (OTA失敗時の resume 等)。
+        return ESP_OK;
+    }
+
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HUB_WS_PORT;
@@ -303,13 +319,36 @@ esp_err_t hub_link_start(void) {
     err = httpd_register_uri_handler(server, &ws_uri);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "httpd_register_uri_handler failed: %s", esp_err_to_name(err));
+        httpd_stop(server);
         return err;
     }
+    s_server = server;
 
-    if (xTaskCreate(beacon_task, "hub_beacon", 4096, NULL, 5, NULL) != pdPASS) {
+    s_beacon_stop_requested = false;
+    if (xTaskCreate(beacon_task, "hub_beacon", 4096, NULL, 5, &s_beacon_task) != pdPASS) {
         ESP_LOGE(TAG, "beacon task の起動に失敗 (自動発見無効、NVS の GW URL 手動設定相当の手段は今回未実装)");
+        s_beacon_task = NULL;
     }
 
     ESP_LOGI(TAG, "hub_link: WS server listening on :%d, beacon on udp :%d", HUB_WS_PORT, BEACON_PORT);
     return ESP_OK;
+}
+
+esp_err_t hub_link_stop(void) {
+    if (s_server == NULL) {
+        return ESP_OK;
+    }
+
+    if (s_beacon_task != NULL) {
+        s_beacon_stop_requested = true;
+        // beacon_task は次の BEACON_INTERVAL_MS 以内に自分で vTaskDelete する
+        // (ソケットを保持したまま外部から vTaskDelete するとfdがリークするため)。
+    }
+
+    esp_err_t err = httpd_stop(s_server);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "httpd_stop failed: %s", esp_err_to_name(err));
+    }
+    s_server = NULL;
+    return err;
 }

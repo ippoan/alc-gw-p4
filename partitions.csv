@@ -1,11 +1,19 @@
-# ESP-IDF 既定の partitions_singleapp.csv (factory 1MB 固定) では
-# hub_link (esp_http_server/esp_http_client/esp_console 追加、
-# ippoan/alc-app-s3#83 GW側実装) 追加後にバイナリが 0xffa30 バイトまで
-# 増え、空き 0x5d0 バイト (0%) まで逼迫したため、実機の flash サイズ
-# (2MB, CONFIG_ESPTOOLPY_FLASHSIZE_2MB) に合わせて factory app を
-# 拡張したカスタムテーブルに切り替える。OTA (2スロット化) は
-# 別途 (docs記載の「中継本体実装後に着手」方針、まだ未着手)。
+# 実機は 16MB flash (Detected size(16384k)、CONFIG_ESPTOOLPY_FLASHSIZE_16MB)。
+# recorder_link 経由の OTA (alc-gw-p4#15 フェーズ3) 対応のため、それまでの
+# factory 単一スロット構成から otadata + ota_0/ota_1 の2スロット構成に
+# 切り替える。nvs/phy_init のオフセット・サイズは変更しない (既存デバイスの
+# NVS内容 — device credential — をそのまま活かすため)。
+#
+# 重要 (運用上の注意): 現行の factory 単一スロット構成からこの構成への
+# 無停止OTA移行パスは存在しない。既にデプロイ済みの機体をこの構成に
+# 移行するには、シリアル接続でのフルイレース+書き込みが必要 (一度きりの
+# 物理アクセスを伴う技術者作業)。それ以降のみOTAが使える。
+#
+# 各appスロットは3MB (現行factoryは0x1E0000≈1.9MBでほぼ満杯だったため、
+# ws_client/recorder_link 追加後を見込んで余裕を持たせた)。64KBアライメント済み。
 # Name,     Type, SubType,  Offset,   Size,      Flags
 nvs,        data, nvs,      0x9000,   0x6000,
 phy_init,   data, phy,      0xf000,   0x1000,
-factory,    app,  factory,  0x10000,  0x1E0000,
+otadata,    data, ota,      0x10000,  0x2000,
+ota_0,      app,  ota_0,    0x20000,  0x300000,
+ota_1,      app,  ota_1,    0x320000, 0x300000,
