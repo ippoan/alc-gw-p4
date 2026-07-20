@@ -33,10 +33,24 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_HTTPD_WS_SUPPORT=y
 
 # 既定の partitions_singleapp.csv (factory 1MB 固定) は hub_link 追加後に
-# 空き 0% まで逼迫したため、実機 flash サイズ (2MB) に合わせて factory app
-# を 0x1E0000 (1.875MB) まで拡張したカスタムテーブル (partitions.csv) に切替
+# 空き 0% まで逼迫したため、カスタムテーブル (partitions.csv) に切替。
+# recorder_link 経由の OTA (alc-gw-p4#15 フェーズ3) 対応で otadata +
+# ota_0/ota_1 の2スロット構成にした
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# 実機は 16MB (Detected size(16384k)) だが、これまで2スロット化前の
+# factory 単一スロット用に 2MB のまま設定していた。OTA 2スロット化に
+# 伴い実サイズへ更新する
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESPTOOLPY_HEADER_FLASHSIZE_UPDATE=y
+
+# OTA ロールバック: 新イメージ起動後、recorder_link の初回認証付きWS接続
+# 成功 (ota_link_confirm_running_app 呼び出し) まで pending 状態にし、
+# それに失敗した場合は次回リセットで前スロットへ自動ロールバックさせる。
+# secure boot は未設定のため anti-rollback (署名バージョン管理) は使わない
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # この基板は PC と native USB Serial/JTAG (espflash/esptool が使うのと同じ
 # COM ポート) でしか繋がっておらず、GPIO37/38 (既定の UART0 console) には

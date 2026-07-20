@@ -51,6 +51,10 @@
 
 static const char *TAG = "relay";
 
+// OTA (alc-gw-p4#15 フェーズ3) 中の一時停止フラグ。vTaskSuspend ではなく
+// 協調的なフラグ方式にする理由は relay.h のコメント参照。
+static volatile bool s_relay_paused;
+
 #define EVT_PEER_FAILED     (1 << 0)
 #define EVT_RTSP_ERROR      (1 << 1)
 #define EVT_RTSP_RX_STOPPED (1 << 2)
@@ -458,6 +462,14 @@ static bool run_signaling_session(void) {
     viewer_t *v = NULL;
 
     while (1) {
+        if (s_relay_paused) {
+            ESP_LOGI(TAG, "relay: pause要求により signaling セッションを終了します");
+            viewer_close(v);
+            signaling_client_close(sig);
+            vQueueDelete(q);
+            return true;
+        }
+
         signaling_msg_t msg;
         if (xQueueReceive(q, &msg, pdMS_TO_TICKS(PEER_MAIN_LOOP_INTERVAL_MS)) == pdTRUE) {
             switch (msg.type) {
@@ -547,6 +559,13 @@ static void relay_task(void *arg) {
     (void)arg;
     uint32_t backoff_ms = RECONNECT_MIN_BACKOFF_MS;
     while (1) {
+        if (s_relay_paused) {
+            // pause中は signaling セッションを開こうとせず idle で待つ
+            // (OTAダウンロード中、relay_pause()/relay_resume() 参照)。
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
         bool connected_once = run_signaling_session();
         if (connected_once) {
             // 一度でも signaling に繋がっていたなら次回はすぐ再試行
@@ -574,4 +593,12 @@ void relay_start(void) {
         return;
     }
     xTaskCreate(relay_task, "relay", 8192, NULL, 5, NULL);
+}
+
+void relay_pause(void) {
+    s_relay_paused = true;
+}
+
+void relay_resume(void) {
+    s_relay_paused = false;
 }

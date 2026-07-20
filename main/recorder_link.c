@@ -16,6 +16,7 @@
 #include "credential.h"
 #include "auth_http.h"
 #include "ws_client.h"
+#include "ota_link.h"
 #include "recorder_link.h"
 
 static const char *TAG = "recorder_link";
@@ -101,16 +102,74 @@ static void handle_version_command(ws_client_t *ws, const char *cmd_id) {
     send_command_result(ws, cmd_id, payload);
 }
 
-// OTA本体はフェーズ3で実装する。それまではサーバー側を待機させないよう
-// 即座にエラーを返す (CoreS3 ota.rs と同じ "phase"/"message" 形式)。
-static void handle_ota_command_stub(ws_client_t *ws, const char *cmd_id) {
+// CoreS3 ota.rs と同じ "phase"/"message" 形式でエラーを返す (url不正・
+// タスク起動失敗など、ota_link_handle_command を呼ぶ前の早期失敗用)。
+static void handle_ota_command_error(ws_client_t *ws, const char *cmd_id, const char *message) {
     cJSON *payload = cJSON_CreateObject();
     if (payload == NULL) {
         return;
     }
     cJSON_AddStringToObject(payload, "phase", "error");
-    cJSON_AddStringToObject(payload, "message", "ota not yet supported");
+    cJSON_AddStringToObject(payload, "message", message);
     send_command_result(ws, cmd_id, payload);
+}
+
+// ota_link の進捗コールバック。phase_json は既に組み立て済みの JSON
+// オブジェクト文字列 (ota_link.h 参照) なので、そのまま payload として
+// command_result に包んで送るだけでよい。
+static void ota_progress_to_command_result(const char *cmd_id, const char *phase_json, void *user) {
+    ws_client_t *ws = (ws_client_t *)user;
+    cJSON *payload = cJSON_Parse(phase_json);
+    if (payload == NULL) {
+        return;
+    }
+    send_command_result(ws, cmd_id, payload);
+}
+
+typedef struct {
+    ws_client_t *ws;
+    char *cmd_id;
+    char *url;
+} ota_task_ctx_t;
+
+static void ota_task_ctx_free(ota_task_ctx_t *ctx) {
+    if (ctx == NULL) {
+        return;
+    }
+    free(ctx->cmd_id);
+    free(ctx->url);
+    free(ctx);
+}
+
+// ota_link_handle_command はブロッキングで、recorder_link の WS 受信/ping
+// ループを塞がないよう専用タスクで実行する。成功時は esp_restart() で戻らない。
+static void ota_worker_task(void *arg) {
+    ota_task_ctx_t *ctx = (ota_task_ctx_t *)arg;
+    ota_link_handle_command(ctx->cmd_id, ctx->url, ota_progress_to_command_result, ctx->ws);
+    // ここに到達するのは失敗時のみ (ota_link 内で resume 済み、成功時は再起動)。
+    ota_task_ctx_free(ctx);
+    vTaskDelete(NULL);
+}
+
+static void handle_ota_command(ws_client_t *ws, const cJSON *payload, const char *cmd_id) {
+    const cJSON *url_j = cJSON_GetObjectItemCaseSensitive(payload, "url");
+    if (!cJSON_IsString(url_j) || url_j->valuestring == NULL || url_j->valuestring[0] == '\0') {
+        handle_ota_command_error(ws, cmd_id, "invalid url");
+        return;
+    }
+
+    ota_task_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (ctx != NULL) {
+        ctx->ws = ws;
+        ctx->cmd_id = strdup(cmd_id);
+        ctx->url = strdup(url_j->valuestring);
+    }
+    if (ctx == NULL || ctx->cmd_id == NULL || ctx->url == NULL ||
+        xTaskCreate(ota_worker_task, "ota", 8192, ctx, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "ota task の起動に失敗");
+        ota_task_ctx_free(ctx);
+        handle_ota_command_error(ws, cmd_id, "failed to start ota task");
+    }
 }
 
 // 下りフレームを解釈する。id はトップレベル、action は payload オブジェクトの
@@ -137,7 +196,7 @@ static void handle_frame(ws_client_t *ws, const char *json) {
                 if (strcmp(action->valuestring, "version") == 0) {
                     handle_version_command(ws, id->valuestring);
                 } else if (strcmp(action->valuestring, "ota") == 0) {
-                    handle_ota_command_stub(ws, id->valuestring);
+                    handle_ota_command(ws, payload, id->valuestring);
                 }
                 // measure/print/gw_url 等 (CoreS3専用) は P4 と無関係なので無視する。
             }
@@ -201,6 +260,9 @@ static bool run_recorder_session(void) {
                 ESP_LOGI(TAG, "recorder_link: connected");
                 up = true;
                 connected_once = true;
+                // recorder_link への初回認証付き接続成功を機体の健全性の
+                // 基準とする (フェーズ3 OTAロールバック解除、ota_link.h 参照)。
+                ota_link_confirm_running_app();
                 break;
 
             case REC_MSG_DISCONNECTED:
