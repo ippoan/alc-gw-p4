@@ -26,6 +26,7 @@
 // RTSP keepalive: SETUP応答の Session timeout の半分の間隔で OPTIONS を
 // 送り、カメラ側のセッションタイムアウトを更新する (rtsp_rx_task 内、
 // alc-gw-p4#1 残課題)。
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -289,6 +290,13 @@ static esp_err_t start_peer(viewer_t *v) {
     // 使わない (docs/whip-convention.md (廃止予定) の ICE 節と同じ判断)。
     static esp_peer_default_cfg_t default_cfg;
     memset(&default_cfg, 0, sizeof(default_cfg));
+    // agent_recv_timeout 既定 (0 → 100ms) のままだと、DTLSハンドシェイク側の
+    // 再送タイマー (dtls_srtp.c の mbedtls_ssl_conf_handshake_timeout、
+    // 1000〜6000ms) より下層のICEエージェントrecvポーリングが先に
+    // タイムアウトし、"PEER_DEF: agent_recv timeout" → ハンドシェイク
+    // やり直しを無限に繰り返す事象が実機で確認された (alc-gw-p4#19)。
+    // mbedtls側の最小再送間隔 (1000ms) に合わせて引き上げる。
+    default_cfg.agent_recv_timeout = 1000;
 
     esp_peer_cfg_t cfg = {
         .video_dir = ESP_PEER_MEDIA_DIR_SEND_ONLY,
@@ -403,11 +411,14 @@ static void viewer_handle_answer(viewer_t *v, const char *answer_sdp) {
 // device credential (role=device-gateway) があれば cam-relay-token を都度
 // mint し、無い/mint失敗なら静的トークン (CONFIG_RELAY_SIGNALING_TOKEN) に
 // フォールバックする (移行期共存、alc-gw-p4#2 テスト計画)。mint できたら
-// *out_minted_token に所有権を渡す (呼び出し側が free する。static token
-// にフォールバックした場合は NULL のまま)。*out_expiry_us は再mintすべき
-// 時刻 (static token の場合は運用側が失効させる前提で INT64_MAX)。
-static bool mint_or_fallback_token(char **out_minted_token, int64_t *out_expiry_us) {
+// *out_minted_token / *out_site_id に所有権を渡す (呼び出し側が free する。
+// static token にフォールバックした場合は両方 NULL のまま — site_id は
+// RELAY_SIGNALING_ROOM_OVERRIDE で別途補う、relay.c 呼び出し側参照)。
+// *out_expiry_us は再mintすべき時刻 (static token の場合は運用側が失効
+// させる前提で INT64_MAX)。
+static bool mint_or_fallback_token(char **out_minted_token, char **out_site_id, int64_t *out_expiry_us) {
     *out_minted_token = NULL;
+    *out_site_id = NULL;
     *out_expiry_us = INT64_MAX;
 
     char device_id[CREDENTIAL_ID_MAX_LEN];
@@ -424,9 +435,9 @@ static bool mint_or_fallback_token(char **out_minted_token, int64_t *out_expiry_
     }
 
     *out_minted_token = minted.access_token; // 所有権を呼び出し側へ移す
+    *out_site_id = minted.site_id;           // 同上
     *out_expiry_us =
         esp_timer_get_time() + ((int64_t)minted.expires_in_s - TOKEN_REFRESH_MARGIN_S) * 1000000;
-    free(minted.site_id);
     return true;
 }
 
@@ -442,13 +453,38 @@ static bool run_signaling_session(void) {
     }
 
     char *minted_token = NULL;
+    char *minted_site_id = NULL;
     int64_t token_expiry_us = INT64_MAX;
-    mint_or_fallback_token(&minted_token, &token_expiry_us);
+    mint_or_fallback_token(&minted_token, &minted_site_id, &token_expiry_us);
     const char *token = minted_token != NULL ? minted_token : CONFIG_RELAY_SIGNALING_TOKEN;
+    // site_id は cam-relay-token mint 応答を常に優先する (拠点ごとに違う値を
+    // 全デバイス共通の OTA バイナリに焼けないため、実行時に決まる)。mint が
+    // 使えない場合のみ開発用の静的値にフォールバックする。
+    const char *site_id = minted_site_id != NULL ? minted_site_id : CONFIG_RELAY_SIGNALING_ROOM_OVERRIDE;
+
+    if (site_id[0] == '\0') {
+        ESP_LOGW(TAG, "site_id 不明 (device credential 未設定 or mint失敗、"
+                       "RELAY_SIGNALING_ROOM_OVERRIDE も未設定) — 今回の接続試行をスキップ");
+        free(minted_token);
+        free(minted_site_id);
+        vQueueDelete(q);
+        return false;
+    }
+
+    char endpoint[192];
+    int n = snprintf(endpoint, sizeof(endpoint), "wss://%s/cam-room/%s", CONFIG_RELAY_SIGNALING_HOST, site_id);
+    if (n < 0 || (size_t)n >= sizeof(endpoint)) {
+        ESP_LOGE(TAG, "signaling endpoint がバッファに収まらない (host/site_id が長すぎる)");
+        free(minted_token);
+        free(minted_site_id);
+        vQueueDelete(q);
+        return false;
+    }
 
     signaling_client_t *sig = NULL;
-    esp_err_t err = signaling_client_connect(CONFIG_RELAY_SIGNALING_URL, token, q, &sig);
+    esp_err_t err = signaling_client_connect(endpoint, token, q, &sig);
     free(minted_token);
+    free(minted_site_id);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "signaling_client_connect failed: %s", esp_err_to_name(err));
         vQueueDelete(q);
@@ -583,13 +619,13 @@ static void relay_task(void *arg) {
 }
 
 void relay_start(void) {
-    // signaling URL 未設定 (既定は空文字、RTSP_USERNAME/PASSWORD と同じ規約)
+    // signaling host 未設定 (既定は空文字、RTSP_USERNAME/PASSWORD と同じ規約)
     // なら relay_task 自体を起動しない。以前はダミーの example.workers.dev
     // を既定にしていたため、未設定のまま起動すると DNS 解決失敗の再接続
     // ループが priority 5 で回り続け、priority 2 の console (esp_console)
     // タスクが実質的に応答不能になる事故があった。
-    if (CONFIG_RELAY_SIGNALING_URL[0] == '\0') {
-        ESP_LOGI(TAG, "RELAY_SIGNALING_URL 未設定のため camera relay を起動しません");
+    if (CONFIG_RELAY_SIGNALING_HOST[0] == '\0') {
+        ESP_LOGI(TAG, "RELAY_SIGNALING_HOST 未設定のため camera relay を起動しません");
         return;
     }
     xTaskCreate(relay_task, "relay", 8192, NULL, 5, NULL);
