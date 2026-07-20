@@ -50,3 +50,18 @@ esp_err_t auth_http_introspect(const char *base_url, const char *device_id, cons
                                 const char *token, auth_http_introspect_t *out);
 
 void auth_http_introspect_free(auth_http_introspect_t *t);
+
+// POST /device/token の結果。site_id は device JWT には無いため常に NULL。
+typedef struct {
+    char *access_token;
+    int expires_in_s;
+    char *site_id; // 常に NULL (device/token 応答に site_id は無い、呼び出し側はNULL許容で読む)
+} auth_http_device_token_t;
+
+// admin dashboard uplink (cf-alc-recorder /ws) 用の device JWT を mint する
+// (TTL 3600s, alc-gw-p4#15)。hub-token/cam-relay-token と異なり site 非スコープ。
+// 成功時は *out に結果を書き込む (呼び出し側が auth_http_device_token_free で解放)。
+esp_err_t auth_http_device_token(const char *base_url, const char *device_id, const char *device_secret,
+                                  auth_http_device_token_t *out);
+
+void auth_http_device_token_free(auth_http_device_token_t *t);

@@ -96,17 +96,24 @@ static char *dup_json_string(const cJSON *root, const char *key) {
     return strdup(v->valuestring);
 }
 
-esp_err_t auth_http_hub_token(const char *base_url, const char *device_id, const char *device_secret,
-                               const char *nonce, auth_http_hub_token_t *out) {
-    memset(out, 0, sizeof(*out));
-
+// hub-token/cam-relay-token/device-token 共通の mint 処理: {device_id,
+// device_secret[, nonce]} を base_url+path へ POST し、{access_token,
+// site_id, expires_in} を解析して *out_* に書き込む。access_token は常に
+// 必須。site_id は require_site_id が false なら欠落を許容する (device/token
+// 応答には site_id が無いため)。失敗時は *out_access_token/*out_site_id を
+// NULL のままにする (呼び出し側の out 構造体は事前に memset 済み前提)。
+static esp_err_t mint_token_common(const char *base_url, const char *path, const char *device_id,
+                                   const char *device_secret, const char *nonce, bool require_site_id,
+                                   char **out_access_token, char **out_site_id, int *out_expires_in) {
     cJSON *req = cJSON_CreateObject();
     if (req == NULL) {
         return ESP_ERR_NO_MEM;
     }
     cJSON_AddStringToObject(req, "device_id", device_id);
     cJSON_AddStringToObject(req, "device_secret", device_secret);
-    cJSON_AddStringToObject(req, "nonce", nonce);
+    if (nonce != NULL) {
+        cJSON_AddStringToObject(req, "nonce", nonce);
+    }
     char *req_body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     if (req_body == NULL) {
@@ -114,7 +121,7 @@ esp_err_t auth_http_hub_token(const char *base_url, const char *device_id, const
     }
 
     char url[256];
-    snprintf(url, sizeof(url), "%s/device/hub-token", base_url);
+    snprintf(url, sizeof(url), "%s%s", base_url, path);
 
     char *resp_body = NULL;
     esp_err_t err = post_json(url, req_body, &resp_body);
@@ -133,18 +140,30 @@ esp_err_t auth_http_hub_token(const char *base_url, const char *device_id, const
         return ESP_FAIL;
     }
 
-    out->access_token = dup_json_string(root, "access_token");
-    out->site_id = dup_json_string(root, "site_id");
+    char *access_token = dup_json_string(root, "access_token");
+    char *site_id = dup_json_string(root, "site_id");
     const cJSON *expires = cJSON_GetObjectItemCaseSensitive(root, "expires_in");
-    out->expires_in_s = cJSON_IsNumber(expires) ? expires->valueint : 0;
+    int expires_in_s = cJSON_IsNumber(expires) ? expires->valueint : 0;
     cJSON_Delete(root);
 
-    if (out->access_token == NULL || out->site_id == NULL) {
-        ESP_LOGW(TAG, "hub-token response missing access_token/site_id");
-        auth_http_hub_token_free(out);
+    if (access_token == NULL || (require_site_id && site_id == NULL)) {
+        ESP_LOGW(TAG, "%s response missing access_token%s", path, require_site_id ? "/site_id" : "");
+        free(access_token);
+        free(site_id);
         return ESP_FAIL;
     }
+
+    *out_access_token = access_token;
+    *out_site_id = site_id;
+    *out_expires_in = expires_in_s;
     return ESP_OK;
+}
+
+esp_err_t auth_http_hub_token(const char *base_url, const char *device_id, const char *device_secret,
+                               const char *nonce, auth_http_hub_token_t *out) {
+    memset(out, 0, sizeof(*out));
+    return mint_token_common(base_url, "/device/hub-token", device_id, device_secret, nonce,
+                              /*require_site_id=*/true, &out->access_token, &out->site_id, &out->expires_in_s);
 }
 
 void auth_http_hub_token_free(auth_http_hub_token_t *t) {
@@ -159,54 +178,27 @@ void auth_http_hub_token_free(auth_http_hub_token_t *t) {
 esp_err_t auth_http_cam_relay_token(const char *base_url, const char *device_id, const char *device_secret,
                                      auth_http_cam_relay_token_t *out) {
     memset(out, 0, sizeof(*out));
-
-    cJSON *req = cJSON_CreateObject();
-    if (req == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    cJSON_AddStringToObject(req, "device_id", device_id);
-    cJSON_AddStringToObject(req, "device_secret", device_secret);
-    char *req_body = cJSON_PrintUnformatted(req);
-    cJSON_Delete(req);
-    if (req_body == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    char url[256];
-    snprintf(url, sizeof(url), "%s/device/cam-relay-token", base_url);
-
-    char *resp_body = NULL;
-    esp_err_t err = post_json(url, req_body, &resp_body);
-    free(req_body);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    cJSON *root = cJSON_Parse(resp_body);
-    free(resp_body);
-    if (root == NULL) {
-        return ESP_FAIL;
-    }
-    if (json_has_error(root) || !cJSON_IsObject(root)) {
-        cJSON_Delete(root);
-        return ESP_FAIL;
-    }
-
-    out->access_token = dup_json_string(root, "access_token");
-    out->site_id = dup_json_string(root, "site_id");
-    const cJSON *expires = cJSON_GetObjectItemCaseSensitive(root, "expires_in");
-    out->expires_in_s = cJSON_IsNumber(expires) ? expires->valueint : 0;
-    cJSON_Delete(root);
-
-    if (out->access_token == NULL || out->site_id == NULL) {
-        ESP_LOGW(TAG, "cam-relay-token response missing access_token/site_id");
-        auth_http_cam_relay_token_free(out);
-        return ESP_FAIL;
-    }
-    return ESP_OK;
+    return mint_token_common(base_url, "/device/cam-relay-token", device_id, device_secret, /*nonce=*/NULL,
+                              /*require_site_id=*/true, &out->access_token, &out->site_id, &out->expires_in_s);
 }
 
 void auth_http_cam_relay_token_free(auth_http_cam_relay_token_t *t) {
+    if (t == NULL) {
+        return;
+    }
+    free(t->access_token);
+    free(t->site_id);
+    memset(t, 0, sizeof(*t));
+}
+
+esp_err_t auth_http_device_token(const char *base_url, const char *device_id, const char *device_secret,
+                                  auth_http_device_token_t *out) {
+    memset(out, 0, sizeof(*out));
+    return mint_token_common(base_url, "/device/token", device_id, device_secret, /*nonce=*/NULL,
+                              /*require_site_id=*/false, &out->access_token, &out->site_id, &out->expires_in_s);
+}
+
+void auth_http_device_token_free(auth_http_device_token_t *t) {
     if (t == NULL) {
         return;
     }

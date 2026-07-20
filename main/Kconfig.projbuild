@@ -53,7 +53,19 @@ menu "alc-gw-p4 Relay Configuration"
         help
             POST /device/hub-token・POST /device/introspect
             (ippoan/auth-worker#406、ippoan/alc-app-s3#83 GW側実装) と
-            POST /device/cam-relay-token (alc-gw-p4#2) 共通の宛先。
-            staging で検証する場合は auth-staging.ippoan.org 等に変更する。
+            POST /device/cam-relay-token (alc-gw-p4#2)・POST /device/token
+            (alc-gw-p4#15、recorder_link用) 共通の宛先。staging で検証する
+            場合は auth-staging.ippoan.org 等に変更する。
+
+    config RECORDER_LINK_URL
+        string "Recorder uplink WebSocket URL (cf-alc-recorder /ws)"
+        default ""
+        help
+            wss://<recorder>/ws 形式。device JWT (RELAY_AUTH_WORKER_URL 経由で
+            POST /device/token を mint) を Authorization: Bearer で付けて常時
+            接続し、admin dashboard (auth-worker /device/setup) の「接続」
+            「バージョン」列を role=device-gateway でも機能させる
+            (alc-gw-p4#15)。空なら recorder_link 自体を起動しない
+            (RELAY_SIGNALING_URL と同じ規約)。
 
 endmenu
