@@ -290,6 +290,13 @@ static esp_err_t start_peer(viewer_t *v) {
     // 使わない (docs/whip-convention.md (廃止予定) の ICE 節と同じ判断)。
     static esp_peer_default_cfg_t default_cfg;
     memset(&default_cfg, 0, sizeof(default_cfg));
+    // agent_recv_timeout 既定 (0 → 100ms) のままだと、DTLSハンドシェイク側の
+    // 再送タイマー (dtls_srtp.c の mbedtls_ssl_conf_handshake_timeout、
+    // 1000〜6000ms) より下層のICEエージェントrecvポーリングが先に
+    // タイムアウトし、"PEER_DEF: agent_recv timeout" → ハンドシェイク
+    // やり直しを無限に繰り返す事象が実機で確認された (alc-gw-p4#19)。
+    // mbedtls側の最小再送間隔 (1000ms) に合わせて引き上げる。
+    default_cfg.agent_recv_timeout = 1000;
 
     esp_peer_cfg_t cfg = {
         .video_dir = ESP_PEER_MEDIA_DIR_SEND_ONLY,
