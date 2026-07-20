@@ -22,19 +22,33 @@ menu "alc-gw-p4 Relay Configuration"
         help
             RTSP Digest 認証のパスワード。
 
-    config RELAY_SIGNALING_URL
-        string "Camera signaling room WebSocket URL"
+    config RELAY_SIGNALING_HOST
+        string "Camera signaling room host (wss://<host>/cam-room/<拠点ID>)"
+        default "alc-signaling.ippoan.org"
+        help
+            ippoan/alc-app cf-alc-signaling の CameraSignalingRoom
+            (ippoan/alc-app#129) のホスト名 (custom domain、旧
+            *.workers.dev から移行)。全デバイス共通のOTAバイナリに焼く値
+            なので、拠点ごとに変わる site_id はここに含めない —
+            device credential の cam-relay-token mint 応答から得た site_id
+            を relay.c が実行時に付与して "/cam-room/<site_id>" を組み立てる
+            (RELAY_SIGNALING_ROOM_OVERRIDE 参照)。空なら relay_task 自体を
+            起動しない (relay.c 参照) — 以前は full URL をこの設定に直接
+            書く方式で、ダミーの example.workers.dev を既定にしていたため
+            未設定のまま起動すると DNS 解決失敗の再接続ループが priority 5
+            で回り続け、priority 2 の console REPL タスクが実質的に応答
+            不能になる事故があった (同じ理由で空文字を安全な既定にしている)。
+
+    config RELAY_SIGNALING_ROOM_OVERRIDE
+        string "Camera signaling room (site_id) — device credential 未設定時のみ使う開発用の固定値"
         default ""
         help
-            wss://<signaling>/cam-room/<拠点ID> 形式 (role=device は
-            signaling_client が自動付与)。ippoan/alc-app cf-alc-signaling
-            の CameraSignalingRoom (ippoan/alc-app#129) と話す。旧
-            WHIP publish endpoint (https://<sfu>/ingest/<拠点ID>) から
-            置き換え。空なら relay_task 自体を起動しない (relay.c 参照) —
-            以前はダミーの example.workers.dev を既定にしていたため、未設定の
-            まま起動すると DNS 解決失敗の再接続ループが priority 5 で回り
-            続け、priority 2 の console REPL タスクが実質的に応答不能になる
-            事故があった。
+            device credential (role=device-gateway) が設定済みなら
+            cam-relay-token mint 応答の site_id を常に優先する (本番経路)。
+            credential 未設定、または mint に失敗した場合のみ、この静的値
+            にフォールバックする (RELAY_SIGNALING_TOKEN と対で使うローカル
+            検証用)。両方とも無ければその接続試行はスキップし、次回backoff
+            で再試行する。
 
     config RELAY_SIGNALING_TOKEN
         string "Signaling Bearer token (拠点トークン、フォールバック用静的値)"
@@ -66,6 +80,6 @@ menu "alc-gw-p4 Relay Configuration"
             接続し、admin dashboard (auth-worker /device/setup) の「接続」
             「バージョン」列を role=device-gateway でも機能させる
             (alc-gw-p4#15)。空なら recorder_link 自体を起動しない
-            (RELAY_SIGNALING_URL と同じ規約)。
+            (RELAY_SIGNALING_HOST と同じ規約)。
 
 endmenu

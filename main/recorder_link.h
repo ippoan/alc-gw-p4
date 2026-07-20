@@ -7,6 +7,6 @@
 // firmware バージョンで応答する。"ota" コマンドは本フェーズでは stub
 // (フェーズ3の OTA 実装まで "not yet supported" を返すのみ)。
 //
-// CONFIG_RECORDER_LINK_URL が空なら起動しない (RELAY_SIGNALING_URL と同じ規約)。
+// CONFIG_RECORDER_LINK_URL が空なら起動しない (RELAY_SIGNALING_HOST と同じ規約)。
 // app_eth_wait_for_ip() 完了後に呼ぶこと。
 void recorder_link_start(void);
