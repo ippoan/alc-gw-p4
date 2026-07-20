@@ -6,11 +6,6 @@ dependencies:
   # ippoan/alc-app cf-alc-signaling の CameraSignalingRoom と話す、
   # ippoan/alc-app#129)。
   espressif/esp_peer: "^1.5.0"
-  # 有線Ethernet初期化 (main/CMakeLists.txt REQUIRES)。ESP-IDF v5.5では
-  # コンポーネントマネージャ管理に切り出されているため明示宣言が必要
-  # (未宣言でも managed_components/ にキャッシュが残っていると気付かず
-  # ビルドできてしまうため、fullclean で顕在化した)。
-  espressif/ethernet_init: "^1.3.0"
   # シグナリング用 WebSocket クライアント (旧: WHIP HTTP POST/DELETE)。
   espressif/esp_websocket_client: "^1.7"
   # RTSP client pull (stream2 の H.264 を受信) は components/rtsp_client
