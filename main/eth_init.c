@@ -1,8 +1,9 @@
 // Unit PoE-P4 (esp32p4 内蔵EMAC + IP101GRI PHY) の有線 Ethernet 起動。
 //
 // espressif/esp-webrtc-solution の whip_demo (solutions/common/network.c の
-// CONFIG_NETWORK_USE_ETHERNET 分岐) と同じ配線: example_eth_init (IDF 標準の
-// examples/ethernet/basic/components/ethernet_init) → esp_netif_new
+// CONFIG_NETWORK_USE_ETHERNET 分岐) と同じ配線: ethernet_init_all
+// (espressif/ethernet_init、旧 examples/ethernet/basic の example_eth_init
+// から改名・コンポーネントレジストリへ切り出し済み) → esp_netif_new
 // (ESP_NETIF_DEFAULT_ETH, ifkey="ETH_DEF") → esp_eth_new_netif_glue →
 // esp_eth_start。GPIO 配線は M5Unit-PoE-P4-UserDemo の実機値を
 // sdkconfig.defaults に反映済み (MDC=31 / MDIO=52 / RST=51 / addr=1)。
@@ -49,9 +50,15 @@ esp_err_t app_eth_init(void) {
         return ESP_ERR_NO_MEM;
     }
 
+    // ethernet_init_all (espressif/ethernet_init) は内部で ETH_EVENT に対する
+    // esp_event_handler_instance_register を行うため、デフォルトイベントループが
+    // 先に存在している必要がある (旧 example_eth_init 時代には無かった制約)。
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
     uint8_t eth_port_cnt = 0;
     esp_eth_handle_t *eth_handles = NULL;
-    esp_err_t err = example_eth_init(&eth_handles, &eth_port_cnt);
+    esp_err_t err = ethernet_init_all(&eth_handles, &eth_port_cnt);
     if (err != ESP_OK) {
         return err;
     }
@@ -59,9 +66,6 @@ esp_err_t app_eth_init(void) {
         ESP_LOGE(TAG, "no ethernet port found");
         return ESP_FAIL;
     }
-
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
