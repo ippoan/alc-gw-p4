@@ -3,22 +3,30 @@
 # は Cloudflare Pages 配布だが、本リポジトリは別配布経路として GitHub Releases
 # を使う (ビルド成果物をそのまま release asset にできて追加インフラ不要なため)。
 #
-# `v*` タグ push で esp32p4 向けにビルドし、app バイナリ + manifest.json を
-# release asset として公開する。ESP-IDF は PROJECT_VER 未設定時 `git describe`
-# の値を firmware version にする (main/recorder_link.c の esp_app_get_description()
-# 参照) — タグ済みコミットをそのまま build すればタグ名と firmware version が
-# 一致する (dirty diff が無い前提)。
+# alc-app-s3 の build.yml (main push = prod+dev 両方を自動ビルド・配信、v*タグは
+# 使わない) に倣い、2チャンネル構成にする:
+#   - main push  → "dev" ローリング release (タグ/assetを毎回delete+recreateで
+#                  上書き)。開発イテレーションのたびにタグを打つ手間を無くす。
+#   - v* タグ push → 通常の (恒久的な) release。安定版の配布用
 #
-# GET /device/setup/latest (auth-worker) は manifest.json の {"version":...} を
-# 読むだけなので、asset 名を固定 (alc_gw_p4_relay.bin / manifest.json) しておけば
-# auth-worker 側の appUrl/manifestUrl は
-# https://github.com/ippoan/alc-gw-p4/releases/latest/download/<asset名> の
-# 固定URLで済み、リリースの度に auth-worker 側を触る必要が無い
-# (device-setup.ts の DEVICE_KINDS["p4-gw"] 配線は別PRで行う、issue #15 参照)。
+# asset名を固定 (alc_gw_p4_relay.bin / manifest.json) しているため、
+# auth-worker 側の appUrl/manifestUrl は以下の固定URLで済み、リリースの度に
+# auth-worker 側を触る必要が無い (DEVICE_KINDS["p4-gw"] 配線は別PR、issue #15参照):
+#   - 安定版: https://github.com/ippoan/alc-gw-p4/releases/latest/download/<asset名>
+#     ("latest" は prerelease を除外するため v* タグ release のみを指す)
+#   - dev版:  https://github.com/ippoan/alc-gw-p4/releases/download/dev/<asset名>
+#
+# ESP-IDF は PROJECT_VER 未設定時 `git describe` の値を firmware version にする
+# (main/recorder_link.c の esp_app_get_description() 参照)。v* タグ push時は
+# タグ済みコミットをそのまま build するのでタグ名と firmware version が一致する
+# (dirty diff が無い前提)。dev release の manifest version はコミットのSHAから
+# 組み立てる (git describe の実際の値と厳密一致しなくても、auth-worker
+# /device/setup/latest の「新しいバージョンがあるか」表示用途では問題ない)。
 name: release
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
@@ -44,12 +52,36 @@ jobs:
           path: .
           command: idf.py build
 
-      - name: Prepare release assets
+      # ── dev channel: main push の度に上書き (タグ運用の手間を無くす) ──────
+      - name: Prepare dev release assets
+        if: github.ref == 'refs/heads/main'
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          cp build/alc_gw_p4_relay.bin alc_gw_p4_relay.bin
+          printf '{"version":"dev-%s"}\n' "$SHORT_SHA" > manifest.json
+
+      - name: Publish dev (rolling) release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete dev --yes --cleanup-tag || true
+          gh release create dev \
+            alc_gw_p4_relay.bin manifest.json \
+            --title "dev (latest main)" \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            --notes "main の最新コミットを自動ビルドしたもの。push の度に上書きされる (安定版は v* タグの release を参照)。"
+
+      # ── stable channel: v* タグ push のみ ────────────────────────────────
+      - name: Prepare stable release assets
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           cp build/alc_gw_p4_relay.bin alc_gw_p4_relay.bin
           printf '{"version":"%s"}\n' "${{ github.ref_name }}" > manifest.json
 
-      - name: Create GitHub Release
+      - name: Create stable GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
