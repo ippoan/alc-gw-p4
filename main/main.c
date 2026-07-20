@@ -11,6 +11,7 @@
 #include "esp_peer.h"
 #include "console_cmds.h"
 #include "hub_link.h"
+#include "recorder_link.h"
 
 static const char *TAG = "main";
 
@@ -39,6 +40,10 @@ void app_main(void) {
     if (hub_link_start() != ESP_OK) {
         ESP_LOGW(TAG, "hub_link start failed (CoreS3 連携なしで続行)");
     }
+
+    // recorder_link: admin dashboard uplink (cf-alc-recorder /ws)。接続/
+    // バージョン列を role=device-gateway でも機能させる (alc-gw-p4#15)
+    recorder_link_start();
 
     // DTLS証明書生成の事前ウォームアップ (esp_peer 公式サンプルの推奨)
     esp_peer_pre_generate_cert();
