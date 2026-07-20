@@ -1,0 +1,59 @@
+# P4 GW firmware の配布先を GitHub Releases とする (alc-gw-p4#15 フェーズ3、
+# 実装計画「リスク・未解決事項」節で決定済み)。CoreS3/atoms3-print (alc-app-s3)
+# は Cloudflare Pages 配布だが、本リポジトリは別配布経路として GitHub Releases
+# を使う (ビルド成果物をそのまま release asset にできて追加インフラ不要なため)。
+#
+# `v*` タグ push で esp32p4 向けにビルドし、app バイナリ + manifest.json を
+# release asset として公開する。ESP-IDF は PROJECT_VER 未設定時 `git describe`
+# の値を firmware version にする (main/recorder_link.c の esp_app_get_description()
+# 参照) — タグ済みコミットをそのまま build すればタグ名と firmware version が
+# 一致する (dirty diff が無い前提)。
+#
+# GET /device/setup/latest (auth-worker) は manifest.json の {"version":...} を
+# 読むだけなので、asset 名を固定 (alc_gw_p4_relay.bin / manifest.json) しておけば
+# auth-worker 側の appUrl/manifestUrl は
+# https://github.com/ippoan/alc-gw-p4/releases/latest/download/<asset名> の
+# 固定URLで済み、リリースの度に auth-worker 側を触る必要が無い
+# (device-setup.ts の DEVICE_KINDS["p4-gw"] 配線は別PRで行う、issue #15 参照)。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # ci.yml と揃える。上げる時は両方を合わせて更新すること
+  ESP_IDF_VERSION: v5.5.3
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: idf.py build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.ESP_IDF_VERSION }}
+          target: esp32p4
+          path: .
+          command: idf.py build
+
+      - name: Prepare release assets
+        run: |
+          cp build/alc_gw_p4_relay.bin alc_gw_p4_relay.bin
+          printf '{"version":"%s"}\n' "${{ github.ref_name }}" > manifest.json
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            alc_gw_p4_relay.bin manifest.json \
+            --title "${{ github.ref_name }}" \
+            --generate-notes
